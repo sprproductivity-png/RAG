@@ -1,0 +1,212 @@
+import re
+import json
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+from rank_bm25 import BM25Plus
+from app.core.config import settings
+from app.core.logging import logger
+
+STOPWORDS = {
+    "a", "about", "above", "after", "again", "against", "all", "am", "an", "and",
+    "any", "are", "aren't", "as", "at", "be", "because", "been", "before", "being",
+    "below", "between", "both", "but", "by", "can't", "cannot", "could", "couldn't",
+    "did", "didn't", "do", "does", "doesn't", "doing", "don't", "down", "during",
+    "each", "few", "for", "from", "further", "had", "hadn't", "has", "hasn't",
+    "have", "haven't", "having", "he", "he'd", "he'll", "he's", "her", "here",
+    "here's", "hers", "herself", "him", "himself", "his", "how", "how's", "i",
+    "i'd", "i'll", "i'm", "i've", "if", "in", "into", "is", "isn't", "it", "it's",
+    "its", "itself", "let's", "me", "more", "most", "mustn't", "my", "myself",
+    "no", "nor", "not", "of", "off", "on", "once", "only", "or", "other", "ought",
+    "our", "ours", "ourselves", "out", "over", "own", "same", "shan't", "she",
+    "she'd", "she'll", "she's", "should", "shouldn't", "so", "some", "such",
+    "than", "that", "that's", "the", "their", "theirs", "them", "themselves",
+    "then", "there", "there's", "these", "they", "they'd", "they'll", "they're",
+    "they've", "this", "those", "through", "to", "too", "under", "until", "up",
+    "very", "was", "wasn't", "we", "we'd", "we'll", "we're", "we've", "were",
+    "weren't", "what", "what's", "when", "when's", "where", "where's", "which",
+    "while", "who", "who's", "whom", "why", "why's", "with", "won't", "would",
+    "wouldn't", "you", "you'd", "you'll", "you're", "you've", "your", "yours",
+    "yourself", "yourselves"
+}
+
+def tokenize_text(text: str) -> List[str]:
+    """Tokenizes text into lowercase words with stopword removal."""
+    words = re.findall(r'\b[a-zA-Z0-9_\-\.]+\b', text.lower())
+    return [w for w in words if len(w) > 1 and w not in STOPWORDS]
+
+class BM25CollectionIndex:
+    def __init__(self, collection_name: str):
+        self.collection_name = collection_name
+        self.doc_records: List[Dict[str, Any]] = []
+        self.tokenized_corpus: List[List[str]] = []
+        self.bm25: Optional[BM25Plus] = None
+        self.index_file = settings.get_bm25_path(collection_name)
+        self.load()
+
+    def load(self):
+        if self.index_file.exists():
+            try:
+                with open(self.index_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self.doc_records = data.get("records", [])
+                self.tokenized_corpus = [tokenize_text(r["index_text"]) for r in self.doc_records]
+                if self.tokenized_corpus:
+                    self.bm25 = BM25Plus(self.tokenized_corpus)
+                logger.info(f"Loaded BM25 index for '{self.collection_name}' with {len(self.doc_records)} documents.")
+            except Exception as e:
+                logger.error(f"Failed to load BM25 index for '{self.collection_name}': {e}")
+                self.doc_records = []
+                self.tokenized_corpus = []
+                self.bm25 = None
+
+    def save(self):
+        try:
+            with open(self.index_file, "w", encoding="utf-8") as f:
+                json.dump({"records": self.doc_records}, f, ensure_ascii=False)
+            logger.info(f"Persisted BM25 index for '{self.collection_name}' to {self.index_file}")
+        except Exception as e:
+            logger.error(f"Failed to persist BM25 index for '{self.collection_name}': {e}")
+
+    def add_records(self, records: List[Dict[str, Any]]):
+        """
+        Adds new chunk records.
+        Each record should contain: chunk_id, doc_id, chunk_index, raw_text,
+        context_summary, contextualized_text, metadata.
+        """
+        existing_ids = {r["chunk_id"] for r in self.doc_records}
+        for r in records:
+            chunk_id = r["chunk_id"]
+            index_text = r.get("contextualized_text") or r.get("raw_text", "")
+            record = {
+                "chunk_id": chunk_id,
+                "doc_id": r.get("doc_id", ""),
+                "chunk_index": r.get("chunk_index", 0),
+                "raw_text": r.get("raw_text", ""),
+                "context_summary": r.get("context_summary"),
+                "contextualized_text": r.get("contextualized_text"),
+                "metadata": r.get("metadata", {}),
+                "index_text": index_text
+            }
+            if chunk_id in existing_ids:
+                for i, existing in enumerate(self.doc_records):
+                    if existing["chunk_id"] == chunk_id:
+                        self.doc_records[i] = record
+                        break
+            else:
+                self.doc_records.append(record)
+                existing_ids.add(chunk_id)
+
+        # Rebuild BM25 with BM25Plus
+        self.tokenized_corpus = [tokenize_text(r["index_text"]) for r in self.doc_records]
+        if self.tokenized_corpus:
+            self.bm25 = BM25Plus(self.tokenized_corpus)
+        self.save()
+
+    def search(
+        self,
+        query: str,
+        limit: int = 15,
+        filter_metadata: Optional[Dict[str, Any]] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Executes BM25 search on the collection and returns scored candidate chunks.
+        """
+        if not self.bm25 or not self.doc_records:
+            return []
+
+        tokens = tokenize_text(query)
+        if not tokens:
+            return []
+
+        query_token_set = set(tokens)
+        scores = self.bm25.get_scores(tokens)
+
+        # Pair scores with documents that contain at least one query term
+        scored_pairs = []
+        for i, score in enumerate(scores):
+            # Ensure document actually contains query terms
+            doc_tokens = set(self.tokenized_corpus[i])
+            if not query_token_set.intersection(doc_tokens):
+                continue
+
+            rec = self.doc_records[i]
+            # Check metadata filter
+            if filter_metadata:
+                match = True
+                rec_meta = rec.get("metadata", {})
+                for k, v in filter_metadata.items():
+                    if rec_meta.get(k) != v:
+                        match = False
+                        break
+                if not match:
+                    continue
+
+            scored_pairs.append((float(score), rec))
+
+        # Sort descending by score
+        scored_pairs.sort(key=lambda x: x[0], reverse=True)
+
+        results = []
+        for rank, (score, rec) in enumerate(scored_pairs[:limit], start=1):
+            results.append({
+                "chunk_id": rec["chunk_id"],
+                "doc_id": rec["doc_id"],
+                "chunk_index": rec["chunk_index"],
+                "text": rec["raw_text"],
+                "context_summary": rec.get("context_summary"),
+                "contextualized_text": rec.get("contextualized_text"),
+                "metadata": rec.get("metadata", {}),
+                "bm25_rank": rank,
+                "bm25_score": score,
+            })
+        return results
+
+    def clear(self):
+        self.doc_records = []
+        self.tokenized_corpus = []
+        self.bm25 = None
+        if self.index_file.exists():
+            self.index_file.unlink()
+
+class BM25Service:
+    def __init__(self):
+        self.indexes: Dict[str, BM25CollectionIndex] = {}
+
+    def get_index(self, collection_name: str) -> BM25CollectionIndex:
+        if collection_name not in self.indexes:
+            self.indexes[collection_name] = BM25CollectionIndex(collection_name)
+        return self.indexes[collection_name]
+
+    def add_chunks(self, collection_name: str, records: List[Dict[str, Any]]):
+        idx = self.get_index(collection_name)
+        idx.add_records(records)
+
+    def search_sparse(
+        self,
+        collection_name: str,
+        query: str,
+        limit: int = 15,
+        filter_metadata: Optional[Dict[str, Any]] = None
+    ) -> List[Dict[str, Any]]:
+        idx = self.get_index(collection_name)
+        return idx.search(query, limit=limit, filter_metadata=filter_metadata)
+
+    def delete_index(self, collection_name: str):
+        if collection_name in self.indexes:
+            self.indexes[collection_name].clear()
+            del self.indexes[collection_name]
+        else:
+            BM25CollectionIndex(collection_name).clear()
+
+    def get_docs_count(self, collection_name: str) -> int:
+        idx = self.get_index(collection_name)
+        return len(idx.doc_records)
+
+_bm25_service_instance: Optional[BM25Service] = None
+
+def get_bm25_service() -> BM25Service:
+    global _bm25_service_instance
+    if _bm25_service_instance is None:
+        _bm25_service_instance = BM25Service()
+    return _bm25_service_instance
+
