@@ -4,7 +4,7 @@ A production-grade, enterprise-ready, self-hosted **Hybrid RAG (Retrieval-Augmen
 - **4-Tier Containerized Architecture** via Docker Compose (FastAPI Backend, React + Vite Frontend, Qdrant Vector DB, Redis Task Queue).
 - **Dense Semantic Embeddings** (`BAAI/bge-small-en-v1.5`, 384 dimensions).
 - **Sparse Lexical Search** via **BM25Plus** with custom tokenization, stopword filtering, and persistent disk indexes.
-- **Hybrid Fusion Engine** combining Dense and Sparse result lists via **Reciprocal Rank Fusion (RRF, \(k=60\))** and **Relative Score Fusion (RSF)**.
+- **Hybrid Fusion Engine** combining Dense and Sparse result lists via **Reciprocal Rank Fusion (RRF, k = 60)** and **Relative Score Fusion (RSF)**.
 - **Cross-Encoder Re-ranking** (`cross-encoder/ms-marco-MiniLM-L-6-v2`) with full token-level joint cross-attention.
 - **Semantic Chunking** with sentence embedding cosine distance breakpoint detection and adaptive percentile thresholding.
 - **Anthropic Contextual Retrieval** prepending situational document context summaries before indexing.
@@ -96,12 +96,14 @@ flowchart TD
 Standard keyword retrieval fails when the user query uses different vocabulary from the document (e.g., querying *"automobile powertrain malfunctions"* will miss documents that say *"engine transmission defects"*). Dense embeddings solve this by projecting text into a continuous latent vector space where geometric proximity corresponds to semantic similarity.
 
 We utilize **`BAAI/bge-small-en-v1.5`**:
-- **Dimensionality**: \(d = 384\).
+- **Dimensionality**: `d = 384`.
 - **Metric**: Cosine Similarity:
-  \[
-  \text{CosineSim}(\mathbf{u}, \mathbf{v}) = \frac{\mathbf{u} \cdot \mathbf{v}}{\|\mathbf{u}\|_2 \|\mathbf{v}\|_2} = \frac{\sum_{i=1}^{d} u_i v_i}{\sqrt{\sum_{i=1}^{d} u_i^2} \sqrt{\sum_{i=1}^{d} v_i^2}}
-  \]
-- **L2 Normalization**: Embeddings are \(L_2\)-normalized upon generation (\(\|\mathbf{u}\|_2 = 1\)), which simplifies cosine similarity to an inner dot product (\(\mathbf{u} \cdot \mathbf{v}\)), enabling high-speed SIMD matrix multiplication in Qdrant.
+
+$$
+\text{CosineSim}(\mathbf{u}, \mathbf{v}) = \frac{\mathbf{u} \cdot \mathbf{v}}{\|\mathbf{u}\|_2 \|\mathbf{v}\|_2} = \frac{\sum_{i=1}^{d} u_i v_i}{\sqrt{\sum_{i=1}^{d} u_i^2} \sqrt{\sum_{i=1}^{d} v_i^2}}
+$$
+
+- **L2 Normalization**: Embeddings are L2-normalized upon generation (`||u||₂ = 1`), which simplifies cosine similarity to an inner dot product (`u · v`), enabling high-speed SIMD matrix multiplication in Qdrant.
 
 > [!NOTE]
 > **Dense Retrieval Blind Spots**: Dense models struggle with exact product IDs (e.g., `SKU-99214-X`), acronyms, phone numbers, or code identifiers because vector compression blurs rare lexical tokens into nearby semantic clusters.
@@ -112,61 +114,65 @@ We utilize **`BAAI/bge-small-en-v1.5`**:
 To counteract the semantic generalization of dense embeddings, the engine implements a persistent **BM25Plus** sparse keyword retrieval index.
 
 #### The Problem with Standard TF-IDF and BM25
-1. **TF Saturation**: In standard TF-IDF, term frequency scales linearly or logarithmically without an upper bound. BM25 introduces asymptotic term frequency saturation via parameter \(k_1\).
-2. **Length Penalization**: Long documents naturally contain more occurrences of words. BM25 normalizes by document length ratio relative to average corpus length via parameter \(b\).
-3. **BM25+ Enhancement**: Standard BM25 excessively penalizes long documents with low term frequencies, sometimes assigning zero or near-zero scores to relevant documents. BM25+ adds a positive lower-bound constant \(\delta = 1.0\).
+1. **TF Saturation**: In standard TF-IDF, term frequency scales linearly or logarithmically without an upper bound. BM25 introduces asymptotic term frequency saturation via parameter `k₁`.
+2. **Length Penalization**: Long documents naturally contain more occurrences of words. BM25 normalizes by document length ratio relative to average corpus length via parameter `b`.
+3. **BM25+ Enhancement**: Standard BM25 excessively penalizes long documents with low term frequencies, sometimes assigning zero or near-zero scores to relevant documents. BM25+ adds a positive lower-bound constant `δ = 1.0`.
 
 #### Mathematical Formulation of BM25+
-Given query \(Q = \{q_1, q_2, \dots, q_n\}\) and document \(D\):
-\[
+Given query `Q = {q₁, q₂, ..., qₙ}` and document `D`:
+
+$$
 \text{Score}_{\text{BM25+}}(D, Q) = \sum_{i=1}^{n} \text{IDF}(q_i) \cdot \left[ \frac{f(q_i, D) \cdot (k_1 + 1)}{f(q_i, D) + k_1 \cdot \left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)} + \delta \right]
-\]
+$$
 
 Where:
-- \(f(q_i, D)\): Raw count of term \(q_i\) in document \(D\).
-- \(|D|\): Length of document \(D\) in tokens.
-- \(\text{avgdl}\): Average document length across the entire collection.
-- \(k_1 = 1.5\): Controls term frequency saturation.
-- \(b = 0.75\): Controls document length normalization.
-- \(\delta = 1.0\): Minimum contribution constant (BM25+).
-- \(\text{IDF}(q_i)\) is calculated using the Robertson-Spärck Jones formula:
-  \[
-  \text{IDF}(q_i) = \ln \left( \frac{N - n(q_i) + 0.5}{n(q_i) + 0.5} + 1 \right)
-  \]
-  where \(N\) is total indexed documents and \(n(q_i)\) is the number of documents containing \(q_i\).
+- `f(qᵢ, D)`: Raw count of term `qᵢ` in document `D`.
+- `|D|`: Length of document `D` in tokens.
+- `avgdl`: Average document length across the entire collection.
+- `k₁ = 1.5`: Controls term frequency saturation.
+- `b = 0.75`: Controls document length normalization.
+- `δ = 1.0`: Minimum contribution constant (BM25+).
+- `IDF(qᵢ)` is calculated using the Robertson-Spärck Jones formula:
+
+$$
+\text{IDF}(q_i) = \ln \left( \frac{N - n(q_i) + 0.5}{n(q_i) + 0.5} + 1 \right)
+$$
+
+where `N` is total indexed documents and `n(qᵢ)` is the number of documents containing `qᵢ`.
 
 ---
 
 ### C. Hybrid Fusion: Reciprocal Rank Fusion (RRF) vs Relative Score Fusion (RSF)
 
 When retrieving candidates from both Dense (vector) and Sparse (BM25) systems, their raw scores operate on completely incompatible scales:
-- Dense Cosine Similarity: \([-1.0, 1.0]\) or \([0.0, 1.0]\).
-- BM25 Scores: \([0.0, \infty)\) (unbounded, dependent on corpus size and term rarity).
+- Dense Cosine Similarity: `[-1.0, 1.0]` or `[0.0, 1.0]`.
+- BM25 Scores: `[0.0, ∞)` (unbounded, dependent on corpus size and term rarity).
 
 To merge these two ranked lists without arbitrary score-scaling artifacts, we provide two fusion algorithms:
 
 #### 1. Reciprocal Rank Fusion (RRF) — Default
-RRF is a rank-based aggregation method. Instead of relying on raw numerical scores, it evaluates the position (rank) of chunk \(c\) in the dense list \(\mathcal{R}_{\text{dense}}\) and the sparse list \(\mathcal{R}_{\text{sparse}}\):
+RRF is a rank-based aggregation method. Instead of relying on raw numerical scores, it evaluates the position (rank) of chunk `c` in the dense list `R_dense` and the sparse list `R_sparse`:
 
-\[
+$$
 \text{RRF\_Score}(c) = w_{\text{dense}} \cdot \frac{1}{k_{\text{rrf}} + r_{\text{dense}}(c)} + w_{\text{sparse}} \cdot \frac{1}{k_{\text{rrf}} + r_{\text{sparse}}(c)}
-\]
+$$
 
 Where:
-- \(r(c) \in \{1, 2, 3, \dots\}\) is the 1-based rank position of the item in that list.
-- If an item does not appear in a list, its rank contribution for that list is \(0\).
-- \(k_{\text{rrf}} = 60\): The smoothing constant originally established by Cormack et al. It prevents top-ranked outliers from dominating the aggregate score and stabilizes sensitivity to small rank fluctuations.
-- \(w_{\text{dense}}, w_{\text{sparse}} \in [0.0, 1.0]\): User-adjustable weights in the frontend dashboard.
+- `r(c) ∈ {1, 2, 3, ...}` is the 1-based rank position of the item in that list.
+- If an item does not appear in a list, its rank contribution for that list is `0`.
+- `k_rrf = 60`: The smoothing constant originally established by Cormack et al. It prevents top-ranked outliers from dominating the aggregate score and stabilizes sensitivity to small rank fluctuations.
+- `w_dense, w_sparse ∈ [0.0, 1.0]`: User-adjustable weights in the frontend dashboard.
 
 #### 2. Relative Score Fusion (RSF) — Min-Max Normalization
-RSF normalizes raw scores from each retriever into the interval \([0, 1]\) before computing a weighted sum:
+RSF normalizes raw scores from each retriever into the interval `[0, 1]` before computing a weighted sum:
 
-\[
+$$
 S_{\text{norm}}(c) = \frac{S(c) - S_{\min}}{S_{\max} - S_{\min} + \epsilon}
-\]
-\[
+$$
+
+$$
 \text{RSF\_Score}(c) = w_{\text{dense}} \cdot S_{\text{dense, norm}}(c) + w_{\text{sparse}} \cdot S_{\text{sparse, norm}}(c)
-\]
+$$
 
 RSF preserves relative score differences (e.g., when one candidate is vastly better than the second), whereas RRF is immune to calibration shifts between different query domains.
 
@@ -193,16 +199,18 @@ flowchart LR
 
 #### Why Not Use Cross-Encoders for Everything?
 A Cross-Encoder feeds the concatenation of query and candidate tokens together through all transformer layers:
-\[
+
+$$
 \text{Input} = [\text{CLS}] \circ q_1 \dots q_m \circ [\text{SEP}] \circ d_1 \dots d_k \circ [\text{SEP}]
-\]
-Every query token attends directly to every passage token across all multi-head attention layers (\(\mathcal{O}((m+k)^2)\) computational complexity).
+$$
+
+Every query token attends directly to every passage token across all multi-head attention layers (`O((m + k)²)` computational complexity).
 - **Pros**: Yields human-level relevance scoring; detects negation, semantic subtleties, and precise alignment.
 - **Cons**: Cannot pre-compute or index embeddings. Evaluating 100,000 documents would take minutes per query.
 
 #### The Two-Stage Solution
-1. **Stage 1 (High Recall, Low Latency)**: Hybrid Dense + BM25 retrieves the top-30 candidates in \(\approx 15\text{ms}\).
-2. **Stage 2 (High Precision, Low Volume)**: Cross-Encoder (`ms-marco-MiniLM-L-6-v2`) re-ranks only the top-30 candidates, sorting the most contextually relevant passages to ranks 1–5 in \(\approx 20\text{ms}\).
+1. **Stage 1 (High Recall, Low Latency)**: Hybrid Dense + BM25 retrieves the top-30 candidates in `~15 ms`.
+2. **Stage 2 (High Precision, Low Volume)**: Cross-Encoder (`ms-marco-MiniLM-L-6-v2`) re-ranks only the top-30 candidates, sorting the most contextually relevant passages to ranks 1–5 in `~20 ms`.
 
 ---
 
@@ -229,13 +237,15 @@ sequenceDiagram
 ```
 
 #### Mathematical Logic:
-1. Sentence extraction splits document \(D\) into \(\{s_1, s_2, \dots, s_m\}\).
-2. Compute embeddings \(\mathbf{e}_i = \text{Embed}(s_i)\).
+1. Sentence extraction splits document `D` into `{s₁, s₂, ..., sₘ}`.
+2. Compute embeddings `eᵢ = Embed(sᵢ)`.
 3. Compute consecutive cosine distances:
-   \[
-   d_i = 1 - \text{CosineSim}(\mathbf{e}_i, \mathbf{e}_{i+1})
-   \]
-4. Identify semantic shift breakpoints where \(d_i \ge \text{Percentile}(\{d\}, \theta)\), where \(\theta = 80.0\) (user-configurable).
+
+$$
+d_i = 1 - \text{CosineSim}(\mathbf{e}_i, \mathbf{e}_{i+1})
+$$
+
+4. Identify semantic shift breakpoints where `dᵢ ≥ Percentile({d}, θ)`, where `θ = 80.0` (user-configurable).
 5. Build chunks by accumulating sentences until a breakpoint or `CHUNK_MAX_CHARACTERS` (1,200 chars) is reached.
 
 ---
@@ -249,7 +259,7 @@ If isolated from the document, neither BM25 nor dense search knows **which compa
 
 **Anthropic Contextual Retrieval** solves this by generating an explicit situational context summary for each chunk and prepending it:
 
-```
+```text
 [Anthropic Situational Summary]:
 This chunk is from the Apex Global Financial Statement Q3 2024, Section 2: Operating Margins. It details Apex Global's cost reduction initiatives in EU datacenters and resulting quarterly operating margin expansion.
 
@@ -478,9 +488,11 @@ The file parser ([app/services/file_parser.py](file:///c:/Users/User/PycharmProj
 - **Point IDs**:
   - Qdrant requires valid UUIDs or unsigned integers for point IDs.
   - We generate deterministic UUIDs via namespace hashing:
-    \[
-    \text{UUID} = \text{uuid5}(\text{NAMESPACE\_DNS}, f"{doc\_id}\_{chunk\_idx}")
-    \]
+
+$$
+\text{UUID} = \text{uuid5}(\text{NAMESPACE\_DNS}, f"{doc\_id}\_{chunk\_idx}")
+$$
+
 - **Payload Schema**:
   ```json
   {
@@ -521,8 +533,8 @@ The file parser ([app/services/file_parser.py](file:///c:/Users/User/PycharmProj
 - Stored as persistent JSON on disk at `./data/bm25_indexes/{collection_name}_bm25.json`.
 - Maintains:
   - Tokenized corpus dictionary.
-  - Document frequency table (\(n(q_i)\)).
-  - Average document length (\(\text{avgdl}\)).
+  - Document frequency table (`n(qᵢ)`).
+  - Average document length (`avgdl`).
   - Full payload registry keyed by chunk ID.
 - **Document Aggregation (`get_documents`)**:
   - Scans stored chunk payloads and groups them by `doc_id`.
