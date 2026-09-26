@@ -49,34 +49,37 @@ A production-grade, enterprise-ready, self-hosted **Hybrid RAG (Retrieval-Augmen
 The engine is engineered as four decoupled services connected over a private Docker bridge network (`rag-network`):
 
 ```mermaid
-flowchart TD
-    Client["Client Browser (React SPA)"] -->|"HTTP Port 3000"| Nginx["Nginx Reverse Proxy (Frontend Container)"]
-    Nginx -->|"Static Assets"| ReactUI["React 18 + Vite Web App"]
-    Nginx -->|"API Proxy (250MB limit)"| FastAPI["FastAPI Backend Engine (:8000)"]
+%%{init: {'flowchart': {'curve': 'linear'}}}%%
+flowchart LR
+    Client["Client Browser<br/>(React 18 SPA)"] -->|"HTTP :3000"| Nginx["Frontend Container<br/>(Nginx Proxy & Static Host)"]
+    Nginx -->|"Proxy: /api/*<br/>(250MB Limit)"| FastAPI["Backend Container<br/>(FastAPI REST Engine :8000)"]
 
-    subgraph Backend_Services ["FastAPI Backend Services"]
-        FastAPI --> Endpoints["API Endpoints: upload, search, tasks"]
-        Endpoints --> TaskMgr["TaskManager & Background Worker"]
-        Endpoints --> HybridEngine["Hybrid Search Engine"]
-        Endpoints --> DocMgr["Document Manager"]
-        
-        TaskMgr --> Parser["File Parser: PDF, MD, CSV, JSON"]
-        Parser --> Chunker["Semantic Chunker: Cosine Breakpoints"]
-        Chunker --> Contextual["Anthropic Contextual Enrichment"]
-        Contextual --> Embedder["BGE-small Embedding Service: 384-dim"]
-        
-        HybridEngine --> Embedder
-        HybridEngine --> CrossEncoder["Cross-Encoder Re-ranker: ms-marco"]
-        HybridEngine --> Fusion["RRF / RSF Fusion Engine"]
+    subgraph Storage ["Private Bridge Network: rag-network"]
+        direction TB
+        Redis["Redis 7 Container (:6379)<br/>Distributed Task Queue & State"]
+        Qdrant["Qdrant Vector DB (:6333)<br/>384-dim Dense Embeddings"]
+        BM25["BM25 Disk Store<br/>Sparse Inverted Index"]
+        FileCache["Local File Cache<br/>Raw File Ingestion Buffer"]
     end
 
-    subgraph State_Storage ["State & Persistence Stores"]
-        TaskMgr -->|"Enqueue task_id and state"| Redis["Redis 7 Container (:6379)"]
-        TaskMgr -->|"Cache raw bytes"| FileCache["Disk Cache: ./data/file_cache"]
-        
-        FastAPI -->|"Dense Vectors: Upsert & Search"| Qdrant["Qdrant Vector DB (:6333)"]
-        FastAPI -->|"Sparse Inverted Index"| BM25Store["BM25 Store: ./data/bm25_indexes"]
-    end
+    FastAPI -->|"Enqueue & Task State"| Redis
+    FastAPI -->|"Dense Vector Upsert & Search"| Qdrant
+    FastAPI -->|"BM25+ Token Index & Query"| BM25
+    FastAPI -->|"Raw File Streaming"| FileCache
+```
+
+#### Straight-Line Ingestion Pipeline Flow
+```mermaid
+%%{init: {'flowchart': {'curve': 'linear'}}}%%
+flowchart LR
+    Upload["1. Raw File Upload"] --> Cache["2. Disk Cache Buffer"] --> Queue["3. Redis Queue"] --> Parse["4. File Parser"] --> Chunk["5. Semantic Chunker"] --> Ctx["6. Contextualizer"] --> Embed["7. BGE Embedder"] --> Index["8. Qdrant & BM25"]
+```
+
+#### Straight-Line Retrieval & Re-ranking Flow
+```mermaid
+%%{init: {'flowchart': {'curve': 'linear'}}}%%
+flowchart LR
+    Query["1. User Query"] --> Dual["2. Parallel Retrieval<br/>Dense K-NN + Sparse BM25"] --> Fuse["3. Score Fusion<br/>RRF / RSF"] --> Rerank["4. Cross-Encoder<br/>Joint Attention"] --> TopK["5. Top-K Results"]
 ```
 
 ### Component Responsibilities
