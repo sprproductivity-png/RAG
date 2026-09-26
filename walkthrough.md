@@ -154,7 +154,7 @@ To merge these two ranked lists without arbitrary score-scaling artifacts, we pr
 RRF is a rank-based aggregation method. Instead of relying on raw numerical scores, it evaluates the position (rank) of chunk `c` in the dense list `R_dense` and the sparse list `R_sparse`:
 
 $$
-\text{RRF\_Score}(c) = w_{\text{dense}} \cdot \frac{1}{k_{\text{rrf}} + r_{\text{dense}}(c)} + w_{\text{sparse}} \cdot \frac{1}{k_{\text{rrf}} + r_{\text{sparse}}(c)}
+\text{Score}_{\text{RRF}}(c) = w_{\text{dense}} \cdot \frac{1}{k_{\text{rrf}} + r_{\text{dense}}(c)} + w_{\text{sparse}} \cdot \frac{1}{k_{\text{rrf}} + r_{\text{sparse}}(c)}
 $$
 
 Where:
@@ -171,7 +171,7 @@ S_{\text{norm}}(c) = \frac{S(c) - S_{\min}}{S_{\max} - S_{\min} + \epsilon}
 $$
 
 $$
-\text{RSF\_Score}(c) = w_{\text{dense}} \cdot S_{\text{dense, norm}}(c) + w_{\text{sparse}} \cdot S_{\text{sparse, norm}}(c)
+\text{Score}_{\text{RSF}}(c) = w_{\text{dense}} \cdot S_{\text{dense, norm}}(c) + w_{\text{sparse}} \cdot S_{\text{sparse, norm}}(c)
 $$
 
 RSF preserves relative score differences (e.g., when one candidate is vastly better than the second), whereas RRF is immune to calibration shifts between different query domains.
@@ -488,10 +488,9 @@ The file parser ([app/services/file_parser.py](file:///c:/Users/User/PycharmProj
 - **Point IDs**:
   - Qdrant requires valid UUIDs or unsigned integers for point IDs.
   - We generate deterministic UUIDs via namespace hashing:
-
-$$
-\text{UUID} = \text{uuid5}(\text{NAMESPACE\_DNS}, f"{doc\_id}\_{chunk\_idx}")
-$$
+    ```python
+    point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{doc_id}_{chunk_idx}"))
+    ```
 
 - **Payload Schema**:
   ```json
