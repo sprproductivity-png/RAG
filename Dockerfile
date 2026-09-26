@@ -18,8 +18,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ ./app/
 COPY README.md .
 
-# Create data directory for BM25 and local files
-RUN mkdir -p /app/data/bm25_indexes
+# Create data directory for BM25, file cache, and local files
+RUN mkdir -p /app/data/bm25_indexes /app/data/file_cache
+
 
 EXPOSE 8000
 

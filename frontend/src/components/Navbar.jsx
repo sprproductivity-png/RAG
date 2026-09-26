@@ -39,6 +39,18 @@ export default function Navbar({ health }) {
             Qdrant: {health ? qdrantMode : 'Connecting...'}
           </div>
 
+          {/* Redis Queue Status */}
+          {health?.queue_backend && (
+            <div className={`flex items-center px-2.5 py-1 rounded-full text-xs font-medium border ${
+              health.redis_connected 
+                ? 'bg-rose-950/60 text-rose-300 border-rose-800/50' 
+                : 'bg-slate-800 text-slate-300 border-slate-700'
+            }`}>
+              <span className={`w-2 h-2 rounded-full mr-1.5 ${health.redis_connected ? 'bg-rose-400 animate-pulse' : 'bg-slate-400'}`}></span>
+              Queue: {health.redis_connected ? 'Redis' : 'Local'}
+            </div>
+          )}
+
           {/* Hardware Device */}
           <div className="flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-slate-800 text-slate-300 border border-slate-700">
             <Cpu className="w-3.5 h-3.5 mr-1 text-slate-400" />

@@ -149,4 +149,60 @@ class HealthResponse(BaseModel):
     cross_encoder_model: str
     cross_encoder_device: str
     contextual_provider: str
+    redis_connected: Optional[bool] = None
+    queue_backend: Optional[str] = None
+
+# -------------------------------------------------------------
+# Document Management Schemas
+# -------------------------------------------------------------
+class DocumentSummary(BaseModel):
+    doc_id: str
+    title: str
+    filename: Optional[str] = None
+    file_type: Optional[str] = None
+    chunks_count: int
+    ingested_at: Optional[str] = None
+    sample_preview: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+class DocumentListResponse(BaseModel):
+    collection_name: str
+    total_documents: int
+    documents: List[DocumentSummary]
+
+class DeleteDocumentResponse(BaseModel):
+    message: str
+    collection_name: str
+    doc_id: str
+    deleted_chunks: int
+
+# -------------------------------------------------------------
+# Background Task & Queue Schemas
+# -------------------------------------------------------------
+TaskStatus = Literal["queued", "processing", "completed", "failed"]
+TaskStage = Literal["queued", "parsing", "chunking", "contextualizing", "embedding", "indexing", "completed", "failed"]
+
+class TaskResponse(BaseModel):
+    task_id: str
+    status: TaskStatus
+    stage: TaskStage
+    progress: int = Field(default=0, ge=0, le=100, description="Progress percentage 0-100")
+    stage_message: str
+    filename: Optional[str] = None
+    file_size: Optional[int] = None
+    file_type: Optional[str] = None
+    collection_name: str
+    title: Optional[str] = None
+    created_at: str
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    duration_ms: Optional[float] = None
+    chunks_created: Optional[int] = None
+    error: Optional[str] = None
+    sample_chunks: Optional[List[ChunkDetail]] = None
+
+class TaskListResponse(BaseModel):
+    total_tasks: int
+    tasks: List[TaskResponse]
+
 

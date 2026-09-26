@@ -13,6 +13,13 @@ from .schemas import (
     CollectionStats,
     CollectionsListResponse,
     HealthResponse,
+    DocumentSummary,
+    DocumentListResponse,
+    DeleteDocumentResponse,
+    TaskStatus,
+    TaskStage,
+    TaskResponse,
+    TaskListResponse,
 )
 
 __all__ = [
@@ -30,5 +37,12 @@ __all__ = [
     "CollectionStats",
     "CollectionsListResponse",
     "HealthResponse",
+    "DocumentSummary",
+    "DocumentListResponse",
+    "DeleteDocumentResponse",
+    "TaskStatus",
+    "TaskStage",
+    "TaskResponse",
+    "TaskListResponse",
 ]
 

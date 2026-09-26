@@ -2,7 +2,7 @@ import React from 'react';
 import { Database, Trash2, RefreshCw } from 'lucide-react';
 import { deleteCollectionApi } from '../api';
 
-export default function CollectionsView({ collections, onRefresh, showToast }) {
+export default function CollectionsView({ collections, onRefresh, onViewDocuments, showToast }) {
   const handleDelete = async (name) => {
     if (!window.confirm(`Are you sure you want to delete collection '${name}' and its BM25 index?`)) {
       return;
@@ -66,13 +66,25 @@ export default function CollectionsView({ collections, onRefresh, showToast }) {
                   <td className="py-3 px-4 text-slate-300">{c.distance}</td>
                   <td className="py-3 px-4 text-slate-300">{c.bm25_docs_count}</td>
                   <td className="py-3 px-4 text-right">
-                    <button
-                      onClick={() => handleDelete(c.collection_name)}
-                      className="text-rose-400 hover:text-rose-300 text-xs px-2.5 py-1 rounded bg-rose-950/40 border border-rose-800/40 hover:bg-rose-900/50 transition inline-flex items-center space-x-1"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                      <span>Delete</span>
-                    </button>
+                    <div className="inline-flex items-center space-x-2">
+                      {onViewDocuments && (
+                        <button
+                          onClick={() => onViewDocuments(c.collection_name)}
+                          className="text-indigo-400 hover:text-indigo-300 text-xs px-2.5 py-1 rounded bg-indigo-950/40 border border-indigo-800/40 hover:bg-indigo-900/50 transition inline-flex items-center space-x-1"
+                          title="View and manage individual documents"
+                        >
+                          <span>Documents</span>
+                        </button>
+                      )}
+                      <button
+                        onClick={() => handleDelete(c.collection_name)}
+                        className="text-rose-400 hover:text-rose-300 text-xs px-2.5 py-1 rounded bg-rose-950/40 border border-rose-800/40 hover:bg-rose-900/50 transition inline-flex items-center space-x-1"
+                        title="Delete entire collection"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        <span>Delete</span>
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))

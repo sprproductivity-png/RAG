@@ -64,3 +64,66 @@ export async function executeRerankApi(payload) {
   return res.json();
 }
 
+export async function fetchDocuments(collectionName) {
+  const res = await fetch(`${API_BASE}/collections/${encodeURIComponent(collectionName)}/documents`);
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || 'Failed to fetch documents');
+  }
+  return res.json();
+}
+
+export async function deleteDocumentApi(collectionName, docId) {
+  const res = await fetch(`${API_BASE}/collections/${encodeURIComponent(collectionName)}/documents/${encodeURIComponent(docId)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || 'Failed to delete document');
+  }
+  return res.json();
+}
+
+export async function uploadFileApi(formData) {
+  const res = await fetch(`${API_BASE}/upload`, {
+    method: 'POST',
+    body: formData, // FormData automatically sets multipart/form-data boundary header
+  });
+  if (!res.ok && res.status !== 202) {
+    const err = await res.json();
+    throw new Error(err.detail || 'File upload failed');
+  }
+  return res.json();
+}
+
+export async function fetchTaskStatus(taskId) {
+  const res = await fetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}`);
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || 'Failed to fetch task status');
+  }
+  return res.json();
+}
+
+export async function fetchTasks(limit = 50) {
+  const res = await fetch(`${API_BASE}/tasks?limit=${limit}`);
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || 'Failed to fetch tasks list');
+  }
+  return res.json();
+}
+
+export async function deleteTaskApi(taskId) {
+  const res = await fetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || 'Failed to remove task');
+  }
+  return res.json();
+}
+
+
+

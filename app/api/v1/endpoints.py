@@ -1,11 +1,12 @@
 import time
 import uuid
-from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, HTTPException, Query, status
+from typing import Any, Dict, List, Literal, Optional, Union
+from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Form, Response, status
 
 from app.core.config import settings
 from app.core.logging import logger
 from app.models.schemas import (
+    DocumentInput,
     IngestRequest,
     IngestResponse,
     ChunkDetail,
@@ -18,7 +19,13 @@ from app.models.schemas import (
     CollectionsListResponse,
     CollectionStats,
     HealthResponse,
+    DocumentSummary,
+    DocumentListResponse,
+    DeleteDocumentResponse,
+    TaskResponse,
+    TaskListResponse,
 )
+from app.services.file_parser import parse_uploaded_file
 from app.services.embeddings import get_embedding_service
 from app.services.vector_db import get_vector_db_service
 from app.services.bm25 import get_bm25_service
@@ -26,6 +33,7 @@ from app.services.chunking import chunk_document
 from app.services.contextual import enrich_chunks_with_context
 from app.services.reranker import get_reranker_service
 from app.services.hybrid import get_hybrid_engine
+from app.services.task_manager import get_task_manager
 
 router = APIRouter()
 
@@ -36,14 +44,15 @@ def make_qdrant_uuid(doc_id: str, chunk_idx: int) -> str:
 # -------------------------------------------------------------
 # Ingestion Endpoints
 # -------------------------------------------------------------
-@router.post(
-    "/ingest",
-    response_model=IngestResponse,
-    summary="Ingest documents with Semantic Chunking and Anthropic Contextual Retrieval"
-)
-async def ingest_documents(request: IngestRequest):
+async def _process_ingest(
+    documents: List[DocumentInput],
+    collection_name: Optional[str] = None,
+    chunking_strategy: Literal["semantic", "sliding_window"] = "semantic",
+    use_contextual_retrieval: bool = True,
+    context_provider: Optional[Literal["heuristic", "anthropic", "openai", "ollama"]] = None,
+) -> IngestResponse:
     t_start = time.perf_counter()
-    collection_name = request.collection_name or settings.DEFAULT_COLLECTION
+    target_collection = collection_name or settings.DEFAULT_COLLECTION
 
     embedding_service = get_embedding_service()
     vector_db_service = get_vector_db_service()
@@ -51,7 +60,7 @@ async def ingest_documents(request: IngestRequest):
 
     # Ensure collection exists
     vector_db_service.ensure_collection(
-        collection_name=collection_name,
+        collection_name=target_collection,
         vector_size=embedding_service.get_dimension()
     )
 
@@ -61,15 +70,19 @@ async def ingest_documents(request: IngestRequest):
     sample_chunks_preview: List[ChunkDetail] = []
 
     total_chunks = 0
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
-    for doc_idx, doc in enumerate(request.documents):
+    for doc_idx, doc in enumerate(documents):
         doc_id = doc.id or f"doc_{uuid.uuid4().hex[:8]}"
-        doc_title = doc.title or doc.metadata.get("title")
+        doc_title = doc.title or doc.metadata.get("title") or doc_id
+        doc_meta = {**doc.metadata, "title": doc_title}
+        if "ingested_at" not in doc_meta:
+            doc_meta["ingested_at"] = now_iso
 
         # 1. Semantic or sliding-window chunking
         raw_chunks = chunk_document(
             text=doc.text,
-            strategy=request.chunking_strategy
+            strategy=chunking_strategy
         )
 
         if not raw_chunks:
@@ -80,8 +93,8 @@ async def ingest_documents(request: IngestRequest):
             document_text=doc.text,
             chunks=raw_chunks,
             document_title=doc_title,
-            provider=request.context_provider,
-            enabled=request.use_contextual_retrieval
+            provider=context_provider,
+            enabled=use_contextual_retrieval
         )
 
         # 3. Prepare payload and IDs
@@ -99,7 +112,7 @@ async def ingest_documents(request: IngestRequest):
                 "raw_text": raw_text,
                 "context_summary": context_summary,
                 "contextualized_text": contextualized_text,
-                "metadata": {**doc.metadata, **(chunk.get("metadata") or {})},
+                "metadata": {**doc_meta, **(chunk.get("metadata") or {})},
             }
 
             all_chunk_ids.append(point_id)
@@ -133,7 +146,7 @@ async def ingest_documents(request: IngestRequest):
 
     # 5. Upsert into Qdrant
     vector_db_service.upsert_chunks(
-        collection_name=collection_name,
+        collection_name=target_collection,
         ids=all_chunk_ids,
         vectors=dense_vectors,
         payloads=all_payloads,
@@ -141,20 +154,137 @@ async def ingest_documents(request: IngestRequest):
 
     # 6. Index into BM25
     bm25_service.add_chunks(
-        collection_name=collection_name,
+        collection_name=target_collection,
         records=all_payloads,
     )
 
     duration_ms = (time.perf_counter() - t_start) * 1000.0
 
     return IngestResponse(
-        collection_name=collection_name,
-        documents_ingested=len(request.documents),
+        collection_name=target_collection,
+        documents_ingested=len(documents),
         chunks_created=total_chunks,
         duration_ms=round(duration_ms, 2),
         message="Documents successfully chunked, contextualized, and indexed.",
         sample_chunks=sample_chunks_preview,
     )
+
+@router.post(
+    "/ingest",
+    response_model=IngestResponse,
+    summary="Ingest documents with Semantic Chunking and Anthropic Contextual Retrieval"
+)
+async def ingest_documents(request: IngestRequest):
+    return await _process_ingest(
+        documents=request.documents,
+        collection_name=request.collection_name,
+        chunking_strategy=request.chunking_strategy,
+        use_contextual_retrieval=request.use_contextual_retrieval,
+        context_provider=request.context_provider,
+    )
+
+@router.post(
+    "/upload",
+    response_model=Union[TaskResponse, IngestResponse],
+    summary="Upload a file (.pdf, .txt, .md, .csv, .json). Caches raw file on disk and queues asynchronous processing."
+)
+async def upload_document(
+    response: Response,
+    file: UploadFile = File(..., description="File to upload and parse (.pdf, .txt, .md, .csv, .json)"),
+    collection_name: Optional[str] = Form(None, description="Target Qdrant collection name"),
+    title: Optional[str] = Form(None, description="Optional custom document title"),
+    chunking_strategy: Literal["semantic", "sliding_window"] = Form("semantic"),
+    use_contextual_retrieval: bool = Form(True),
+    context_provider: Optional[Literal["heuristic", "anthropic", "openai", "ollama"]] = Form(None),
+    async_processing: bool = Form(True, description="Whether to cache file and process via background task queue (default: True)"),
+):
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Uploaded file '{file.filename}' is empty."
+        )
+
+    filename = file.filename or "uploaded_file"
+    target_coll = collection_name or settings.DEFAULT_COLLECTION
+
+    # 2-Step Approach: Cache raw file & queue background worker
+    if async_processing:
+        task_manager = get_task_manager()
+        task_res = await task_manager.submit_file_task(
+            file_bytes=file_bytes,
+            filename=filename,
+            collection_name=target_coll,
+            title=title,
+            chunking_strategy=chunking_strategy,
+            use_contextual_retrieval=use_contextual_retrieval,
+            context_provider=context_provider,
+        )
+        response.status_code = status.HTTP_202_ACCEPTED
+        return task_res
+
+    # Synchronous processing fallback
+    extracted_text, inferred_title, metadata = parse_uploaded_file(file_bytes, filename)
+    final_title = title.strip() if title and title.strip() else inferred_title
+    metadata["title"] = final_title
+
+    doc = DocumentInput(
+        id=f"doc_{uuid.uuid4().hex[:8]}",
+        title=final_title,
+        text=extracted_text,
+        metadata=metadata,
+    )
+
+    return await _process_ingest(
+        documents=[doc],
+        collection_name=target_coll,
+        chunking_strategy=chunking_strategy,
+        use_contextual_retrieval=use_contextual_retrieval,
+        context_provider=context_provider,
+    )
+
+# -------------------------------------------------------------
+# Background Task & Ingestion Queue Endpoints
+# -------------------------------------------------------------
+@router.get(
+    "/tasks/{task_id}",
+    response_model=TaskResponse,
+    summary="Get status, current stage, and progress of an ingestion task"
+)
+async def get_task_status(task_id: str):
+    task_manager = get_task_manager()
+    task = await task_manager.get_task(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Task '{task_id}' not found."
+        )
+    return task
+
+@router.get(
+    "/tasks",
+    response_model=TaskListResponse,
+    summary="List active and recent background ingestion tasks"
+)
+async def list_tasks(limit: int = Query(50, ge=1, le=100)):
+    task_manager = get_task_manager()
+    tasks = await task_manager.list_tasks(limit=limit)
+    return TaskListResponse(total_tasks=len(tasks), tasks=tasks)
+
+@router.delete(
+    "/tasks/{task_id}",
+    summary="Remove a task record and its cached raw file"
+)
+async def delete_task(task_id: str):
+    task_manager = get_task_manager()
+    deleted = await task_manager.delete_task(task_id)
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Task '{task_id}' not found."
+        )
+    return {"message": f"Task '{task_id}' removed."}
+
 
 # -------------------------------------------------------------
 # Search & Retrieval Endpoints
@@ -295,6 +425,48 @@ async def delete_collection(collection_name: str):
     return {"message": f"Collection '{collection_name}' successfully deleted."}
 
 # -------------------------------------------------------------
+# Document Management
+# -------------------------------------------------------------
+@router.get(
+    "/collections/{collection_name}/documents",
+    response_model=DocumentListResponse,
+    summary="List all distinct documents indexed in a collection"
+)
+async def list_documents(collection_name: str):
+    bm25 = get_bm25_service()
+    docs = bm25.get_documents(collection_name)
+    return DocumentListResponse(
+        collection_name=collection_name,
+        total_documents=len(docs),
+        documents=[DocumentSummary(**d) for d in docs]
+    )
+
+@router.delete(
+    "/collections/{collection_name}/documents/{doc_id}",
+    response_model=DeleteDocumentResponse,
+    summary="Delete an individual document and all its chunks from Qdrant and BM25"
+)
+async def delete_document(collection_name: str, doc_id: str):
+    vector_db = get_vector_db_service()
+    bm25 = get_bm25_service()
+
+    vdb_deleted = vector_db.delete_document(collection_name, doc_id)
+    bm25_deleted_count = bm25.delete_document(collection_name, doc_id)
+
+    if not vdb_deleted and bm25_deleted_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Document '{doc_id}' not found in collection '{collection_name}'."
+        )
+
+    return DeleteDocumentResponse(
+        message=f"Document '{doc_id}' and {bm25_deleted_count} chunk(s) successfully deleted.",
+        collection_name=collection_name,
+        doc_id=doc_id,
+        deleted_chunks=bm25_deleted_count,
+    )
+
+# -------------------------------------------------------------
 # Health Check Endpoint
 # -------------------------------------------------------------
 @router.get(
@@ -308,6 +480,9 @@ async def health_check():
     reranker = get_reranker_service()
 
     is_connected, mode, url = vector_db.health_check()
+    task_manager = get_task_manager()
+    redis_connected = task_manager.redis_available
+    queue_backend = "redis" if redis_connected else "in_memory"
 
     return HealthResponse(
         status="healthy" if is_connected else "degraded",
@@ -321,5 +496,7 @@ async def health_check():
         cross_encoder_model=settings.CROSS_ENCODER_MODEL,
         cross_encoder_device=reranker.device,
         contextual_provider=settings.CONTEXTUAL_RETRIEVAL_PROVIDER,
+        redis_connected=redis_connected,
+        queue_backend=queue_backend,
     )
 

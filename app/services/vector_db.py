@@ -206,6 +206,31 @@ class VectorDBService:
             logger.error(f"Failed to delete collection '{collection_name}': {e}")
             return False
 
+    def delete_document(self, collection_name: str, doc_id: str) -> bool:
+        """
+        Deletes all vector points associated with a specific doc_id from Qdrant.
+        """
+        try:
+            self.client.delete(
+                collection_name=collection_name,
+                points_selector=qmodels.FilterSelector(
+                    filter=qmodels.Filter(
+                        must=[
+                            qmodels.FieldCondition(
+                                key="doc_id",
+                                match=qmodels.MatchValue(value=doc_id),
+                            )
+                        ]
+                    )
+                ),
+                wait=True,
+            )
+            logger.info(f"Deleted vector points for doc_id '{doc_id}' in collection '{collection_name}'")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete points for doc_id '{doc_id}' in '{collection_name}': {e}")
+            return False
+
     def health_check(self) -> Tuple[bool, str, Optional[str]]:
         """
         Returns (is_connected, mode, url)

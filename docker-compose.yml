@@ -18,7 +18,23 @@ services:
       timeout: 5s
       retries: 5
 
-  # 2. FastAPI Hybrid RAG Backend Engine
+  # 2. Redis Task Queue & Message Broker
+  redis:
+    image: redis:7-alpine
+    container_name: redis-rag-queue
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # 3. FastAPI Hybrid RAG Backend Engine
   backend:
     build:
       context: .
@@ -30,8 +46,11 @@ services:
     depends_on:
       qdrant:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       - QDRANT_URL=http://qdrant:6333
+      - REDIS_URL=redis://redis:6379/0
       - EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
       - CROSS_ENCODER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
       - CONTEXTUAL_RETRIEVAL_PROVIDER=heuristic # or anthropic / openai / ollama
@@ -43,7 +62,7 @@ services:
       - bm25_data:/app/data/bm25_indexes
       - ./data:/app/data
 
-  # 3. React Frontend Dashboard
+  # 4. React Frontend Dashboard
   frontend:
     build:
       context: ./frontend
@@ -52,6 +71,8 @@ services:
     restart: always
     ports:
       - "3000:80"
+    volumes:
+      - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       - backend
 
@@ -60,3 +81,5 @@ volumes:
     name: qdrant_storage
   bm25_data:
     name: bm25_data
+  redis_data:
+    name: redis_data

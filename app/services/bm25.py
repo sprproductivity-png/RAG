@@ -161,6 +161,39 @@ class BM25CollectionIndex:
             })
         return results
 
+    def get_documents(self) -> List[Dict[str, Any]]:
+        docs_map: Dict[str, Dict[str, Any]] = {}
+        for rec in self.doc_records:
+            doc_id = rec.get("doc_id", "unknown")
+            meta = rec.get("metadata", {})
+            if doc_id not in docs_map:
+                docs_map[doc_id] = {
+                    "doc_id": doc_id,
+                    "title": meta.get("title") or doc_id,
+                    "filename": meta.get("filename"),
+                    "file_type": meta.get("file_type"),
+                    "ingested_at": meta.get("ingested_at"),
+                    "chunks_count": 0,
+                    "sample_preview": rec.get("raw_text", "")[:200].replace("\n", " ").strip(),
+                    "metadata": meta,
+                }
+            docs_map[doc_id]["chunks_count"] += 1
+        return list(docs_map.values())
+
+    def delete_document(self, doc_id: str) -> int:
+        initial_count = len(self.doc_records)
+        self.doc_records = [r for r in self.doc_records if r.get("doc_id") != doc_id]
+        deleted_count = initial_count - len(self.doc_records)
+        if deleted_count > 0:
+            self.tokenized_corpus = [tokenize_text(r["index_text"]) for r in self.doc_records]
+            if self.tokenized_corpus:
+                self.bm25 = BM25Plus(self.tokenized_corpus)
+            else:
+                self.bm25 = None
+            self.save()
+            logger.info(f"Deleted {deleted_count} chunks for doc_id '{doc_id}' from BM25 '{self.collection_name}'")
+        return deleted_count
+
     def clear(self):
         self.doc_records = []
         self.tokenized_corpus = []
@@ -201,6 +234,14 @@ class BM25Service:
     def get_docs_count(self, collection_name: str) -> int:
         idx = self.get_index(collection_name)
         return len(idx.doc_records)
+
+    def get_documents(self, collection_name: str) -> List[Dict[str, Any]]:
+        idx = self.get_index(collection_name)
+        return idx.get_documents()
+
+    def delete_document(self, collection_name: str, doc_id: str) -> int:
+        idx = self.get_index(collection_name)
+        return idx.delete_document(doc_id)
 
 _bm25_service_instance: Optional[BM25Service] = None
 

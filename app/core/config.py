@@ -31,6 +31,17 @@ class Settings(BaseSettings):
     # BM25 Storage
     BM25_STORAGE_DIR: str = "./data/bm25_indexes"
 
+    # Raw File Cache & Ingestion Queue Storage
+    FILE_CACHE_DIR: str = "./data/file_cache"
+
+    # Redis Task Queue
+    REDIS_URL: Optional[str] = Field(
+        default=None,
+        description="Optional Redis connection URL (e.g. redis://redis:6379/0 or redis://localhost:6379/0)"
+    )
+    ENABLE_REDIS_QUEUE: bool = True
+
+
     # Dense Embedding Model
     EMBEDDING_MODEL: str = "BAAI/bge-small-en-v1.5"
     EMBEDDING_DEVICE: Optional[str] = None  # None for auto (cuda/cpu)
@@ -70,6 +81,11 @@ class Settings(BaseSettings):
         dir_path = Path(self.BM25_STORAGE_DIR)
         dir_path.mkdir(parents=True, exist_ok=True)
         return dir_path / f"{collection_name}_bm25.json"
+
+    def get_file_cache_dir(self) -> Path:
+        dir_path = Path(self.FILE_CACHE_DIR)
+        dir_path.mkdir(parents=True, exist_ok=True)
+        return dir_path
 
 settings = Settings()
 

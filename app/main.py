@@ -11,6 +11,7 @@ from app.api.v1.endpoints import router as api_v1_router
 from app.services.embeddings import get_embedding_service
 from app.services.reranker import get_reranker_service
 from app.services.vector_db import get_vector_db_service
+from app.services.task_manager import get_task_manager
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -26,8 +27,16 @@ async def lifespan(app: FastAPI):
         f"Hybrid RAG Engine started. Embedding: {emb_service.model_name} ({emb_service.dimension}d), "
         f"Cross-Encoder: {reranker.model_name}, Qdrant Mode: {mode} ({url})"
     )
+
+    # Start Ingestion Queue Worker
+    task_manager = get_task_manager()
+    task_manager.start_worker()
+
     yield
+
     logger.info("Shutting down Hybrid RAG Engine...")
+    await task_manager.stop_worker()
+
 
 app = FastAPI(
     title=settings.APP_NAME,

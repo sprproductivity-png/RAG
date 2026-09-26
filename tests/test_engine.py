@@ -262,3 +262,173 @@ def test_fastapi_endpoints():
         assert ui_direct.status_code == 200
         assert "Hybrid RAG & Re-ranking Engine" in ui_direct.text
 
+def test_file_parser():
+    """Verify parsing of text, markdown, json, csv, and pdf files."""
+    from app.services.file_parser import parse_uploaded_file
+    import io
+    import pypdf
+
+    # 1. Plain text / Markdown
+    md_bytes = b"# Quantum Computing\nSuperconducting qubits operate at millikelvin temperatures."
+    text, title, meta = parse_uploaded_file(md_bytes, "quantum_report.md")
+    assert "Superconducting qubits" in text
+    assert title == "quantum report"
+    assert meta["file_type"] == ".md"
+
+    # 2. JSON
+    json_bytes = b'[{"topic": "Fusion Energy", "status": "Net energy gain achieved"}]'
+    text, title, meta = parse_uploaded_file(json_bytes, "fusion_data.json")
+    assert "Net energy gain achieved" in text
+    assert meta["file_type"] == ".json"
+
+    # 3. CSV
+    csv_bytes = b"city,temperature,condition\nSeattle,62,Rain\nMiami,88,Sunny"
+    text, title, meta = parse_uploaded_file(csv_bytes, "weather_readings.csv")
+    assert "Seattle" in text and "Miami" in text
+    assert meta["file_type"] == ".csv"
+    assert meta["row_count"] == 3
+
+    # 4. PDF (create minimal valid PDF using pypdf)
+    writer = pypdf.PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    pdf_buffer = io.BytesIO()
+    writer.write(pdf_buffer)
+    # Blank PDF produces empty text, which correctly raises 400
+    with pytest.raises(Exception):
+        parse_uploaded_file(pdf_buffer.getvalue(), "blank.pdf")
+
+def test_file_upload_and_document_management_api():
+    """Verify multipart file upload, listing documents, and selective document deletion."""
+    with TestClient(app) as client:
+        test_coll = "test_doc_mgmt_coll"
+
+        # 1. Upload Markdown file (synchronous mode)
+        md_file_content = b"# Autonomous Vehicles\nLiDAR and radar systems provide 360-degree sensor coverage."
+        upload_res = client.post(
+            "/api/v1/upload",
+            data={
+                "collection_name": test_coll,
+                "title": "AV Sensor Architecture",
+                "chunking_strategy": "semantic",
+                "use_contextual_retrieval": "true",
+                "async_processing": "false",
+            },
+            files={"file": ("av_sensors.md", md_file_content, "text/markdown")}
+        )
+        assert upload_res.status_code == 200
+        upload_data = upload_res.json()
+        assert upload_data["documents_ingested"] == 1
+        assert upload_data["chunks_created"] >= 1
+        assert upload_data["collection_name"] == test_coll
+
+        # 2. Upload CSV file (synchronous mode)
+        csv_file_content = b"sensor_id,type,resolution\nS1,LiDAR,128-beam\nS2,Radar,77GHz"
+        upload_res2 = client.post(
+            "/api/v1/upload",
+            data={
+                "collection_name": test_coll,
+                "title": "Sensor Inventory",
+                "chunking_strategy": "sliding_window",
+                "use_contextual_retrieval": "true",
+                "async_processing": "false",
+            },
+            files={"file": ("inventory.csv", csv_file_content, "text/csv")}
+        )
+        assert upload_res2.status_code == 200
+
+        # 3. List documents in collection
+        list_res = client.get(f"/api/v1/collections/{test_coll}/documents")
+        assert list_res.status_code == 200
+        list_data = list_res.json()
+        assert list_data["collection_name"] == test_coll
+        assert list_data["total_documents"] == 2
+        
+        doc_titles = [d["title"] for d in list_data["documents"]]
+        assert "AV Sensor Architecture" in doc_titles
+        assert "Sensor Inventory" in doc_titles
+
+        # Find doc_id of the AV sensor document
+        av_doc = next(d for d in list_data["documents"] if d["title"] == "AV Sensor Architecture")
+        av_doc_id = av_doc["doc_id"]
+        av_chunks = av_doc["chunks_count"]
+        assert av_chunks >= 1
+        assert av_doc["file_type"] == ".md"
+
+        # 4. Delete the AV sensor document specifically
+        del_doc_res = client.delete(f"/api/v1/collections/{test_coll}/documents/{av_doc_id}")
+        assert del_doc_res.status_code == 200
+        del_doc_data = del_doc_res.json()
+        assert del_doc_data["doc_id"] == av_doc_id
+        assert del_doc_data["deleted_chunks"] == av_chunks
+
+        # 5. Verify only the second document remains in the collection
+        list_res_after = client.get(f"/api/v1/collections/{test_coll}/documents")
+        assert list_res_after.status_code == 200
+        list_data_after = list_res_after.json()
+        assert list_data_after["total_documents"] == 1
+        assert list_data_after["documents"][0]["title"] == "Sensor Inventory"
+
+        # 6. Clean up collection
+        clean_res = client.delete(f"/api/v1/collections/{test_coll}")
+        assert clean_res.status_code == 200
+
+def test_async_task_queue_ingestion():
+    """Verify 2-step caching and background queue ingestion with progress tracking."""
+    import time
+    with TestClient(app) as client:
+        test_coll = "test_async_queue_coll"
+
+        # 1. Submit file for async ingestion (2-step: cached & queued)
+        file_content = b"# Battery Engineering\nSilicon anode chemistry increases lithium-ion volumetric energy density by 25%."
+        upload_res = client.post(
+            "/api/v1/upload",
+            data={
+                "collection_name": test_coll,
+                "title": "Battery Engineering Guide",
+                "chunking_strategy": "semantic",
+                "use_contextual_retrieval": "true",
+                "async_processing": "true",
+            },
+            files={"file": ("battery_specs.md", file_content, "text/markdown")}
+        )
+        assert upload_res.status_code == 202
+        task_data = upload_res.json()
+        assert "task_id" in task_data
+        assert task_data["status"] in ["queued", "processing"]
+        assert task_data["filename"] == "battery_specs.md"
+        task_id = task_data["task_id"]
+
+        # 2. Poll task status until complete (timeout 20s)
+        max_retries = 20
+        final_task = None
+        for _ in range(max_retries):
+            status_res = client.get(f"/api/v1/tasks/{task_id}")
+            assert status_res.status_code == 200
+            current_task = status_res.json()
+            if current_task["status"] in ["completed", "failed"]:
+                final_task = current_task
+                break
+            time.sleep(0.5)
+
+        assert final_task is not None, "Task did not complete within timeout."
+        assert final_task["status"] == "completed", f"Task failed: {final_task.get('error')}"
+        assert final_task["progress"] == 100
+        assert final_task["chunks_created"] >= 1
+        assert len(final_task["sample_chunks"]) >= 1
+
+        # 3. Verify task appears in task history list
+        list_tasks_res = client.get("/api/v1/tasks")
+        assert list_tasks_res.status_code == 200
+        all_tasks = list_tasks_res.json()["tasks"]
+        assert any(t["task_id"] == task_id for t in all_tasks)
+
+        # 4. Clean up task record
+        del_task_res = client.delete(f"/api/v1/tasks/{task_id}")
+        assert del_task_res.status_code == 200
+
+        # 5. Clean up collection
+        clean_coll_res = client.delete(f"/api/v1/collections/{test_coll}")
+        assert clean_coll_res.status_code == 200
+
+
+

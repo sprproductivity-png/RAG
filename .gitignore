@@ -1,13 +1,11 @@
-# Byte-compiled / optimized / DLL files
+# Python Bytecode & Optimization
 __pycache__/
 *.py[cod]
 *$py.class
-
-# C extensions
 *.so
-
-# Distribution / packaging
 .Python
+
+# Distribution & Build
 build/
 develop-eggs/
 dist/
@@ -26,7 +24,7 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# Virtual environments
+# Virtual Environments
 .env
 .venv
 env/
@@ -35,45 +33,72 @@ ENV/
 env.bak/
 venv.bak/
 
-# Environment files
+# Environment Variables
 .env*.local
 !.env.example
 
-# Pytest & Testing
+# Pytest & Coverage
 .pytest_cache/
 .coverage
 htmlcov/
 .tox/
 .nox/
 
-# Node & Frontend (React / Vite)
+# Frontend, Node & Vite
 node_modules/
 frontend/node_modules/
 frontend/dist/
+frontend/.vite/
+.vite/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# Local Vector DB & Persistent Data
+# Compiled Static Assets in Backend
+app/static/assets/
+
+# Data Directories & Ingestion File Cache
 data/
+data/file_cache/
+data/bm25_indexes/
+data/qdrant_storage/
+**/file_cache/
 *.db
 *.sqlite
 *.sqlite3
 
-# Logs
+# Redis Persistence & Dumps
+dump.rdb
+appendonlydir/
+
+# HuggingFace & Machine Learning Model Caches
+.cache/
+huggingface/
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.onnx
+
+# Temporary & Log Files
 *.log
 logs/
-
-# IDEs & Editors
-.idea/
-.vscode/
+*.tmp
+*.temp
+*.bak
 *.swp
 *.swo
 *~
+*.pid
+*.seed
+
+# IDEs & Code Editors
+.idea/
+.vscode/
 
 # Operating System Files
 .DS_Store
 Thumbs.db
 desktop.ini
-
+ehthumbs.db

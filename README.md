@@ -6,14 +6,14 @@ A production-ready, modular, and self-hosted **Hybrid RAG & Re-ranking Engine** 
 
 ## Key Features
 
-1. **Interactive Frontend Web Dashboard**:
-   - Built-in single-page application served directly by FastAPI at `http://localhost:8000/`.
-   - **Zero-build setup**: Uses modern Tailwind CSS and glassmorphism styling via CDN — no Node.js or npm needed.
-   - Four dedicated studios:
+1. **Interactive React Web Dashboard**:
+   - Modern single-page application built with React 18, Vite, and Tailwind CSS.
+   - Five dedicated studios:
      - **Hybrid Search Studio**: Real-time slider controls (dense/sparse weights, $k_{rrf}$, top-k), Cross-Encoder re-rank toggle, stage-by-stage latency breakdowns, and rich cards highlighting Anthropic contextual summaries.
-     - **Ingestion & Chunking Studio**: Form with pre-loaded presets (Robotics, Finance), chunking strategy toggles (semantic vs sliding window), and live chunk previews.
+     - **Ingestion & Chunking Studio**: Dual-mode file upload (drag-and-drop `.pdf`, `.txt`, `.md`, `.csv`, `.json`) and raw text with pre-loaded presets (Robotics, Finance), chunking strategy toggles (semantic vs sliding window), and live chunk previews.
+     - **Document Manager**: View all indexed documents per collection, chunk counts, format badges, and selective 1-click document deletion without dropping the entire collection.
      - **Cross-Encoder Playground**: Compare query vs multiple arbitrary passages with immediate relevance logits.
-     - **Collections & System Monitor**: Live vector counts, dimension stats, hardware accelerator badges (CUDA/GPU), and one-click deletion.
+     - **Collections & System Monitor**: Live vector counts, dimension stats, hardware accelerator badges (CUDA/GPU), and one-click collection deletion.
 
 2. **Dockerized Qdrant Vector DB**:
    - Containerized deployment using official `qdrant/qdrant:v1.12.0` with persistent volume storage.
@@ -193,7 +193,113 @@ Chunks text, generates Anthropic Contextual Retrieval summaries, and indexes int
 
 ---
 
-### 2. Hybrid Search & Re-ranking
+### 2. 2-Step Asynchronous File Ingestion & Queue
+**`POST /api/v1/upload`**
+
+Accepts `multipart/form-data` uploads. Under the 2-step architecture:
+1. **Step 1**: The raw file bytes are immediately persisted to disk cache (`./data/file_cache/`).
+2. **Step 2**: An asynchronous task is queued in the background worker, and an **HTTP 202 Accepted** response with `task_id` is returned immediately to the client.
+
+**Form Parameters:**
+- `file`: Uploaded file (`.pdf`, `.txt`, `.md`, `.markdown`, `.csv`, `.tsv`, `.json`)
+- `collection_name` *(optional)*: Target collection (default: `documents`)
+- `title` *(optional)*: Custom title (defaults to cleaned filename)
+- `chunking_strategy` *(optional)*: `semantic` (default) or `sliding_window`
+- `use_contextual_retrieval` *(optional)*: `true` (default) or `false`
+- `context_provider` *(optional)*: `heuristic`, `anthropic`, `openai`, `ollama`
+- `async_processing` *(optional)*: `true` (default, 2-step queued) or `false` (synchronous)
+
+**Response (HTTP 202 Accepted):**
+```json
+{
+  "task_id": "task_2d3c55b55242",
+  "status": "queued",
+  "stage": "queued",
+  "progress": 5,
+  "stage_message": "File cached (2,450,000 bytes). Ingestion task queued for processing.",
+  "filename": "robotics_handbook.pdf",
+  "file_size": 2450000,
+  "file_type": ".pdf",
+  "collection_name": "documents",
+  "created_at": "2026-09-26T18:00:00Z"
+}
+```
+
+---
+
+### 3. Monitor Task Progress & Status
+**`GET /api/v1/tasks/{task_id}`**
+
+Polls real-time stage progress (`queued` &rarr; `parsing` &rarr; `chunking` &rarr; `contextualizing` &rarr; `embedding` &rarr; `indexing` &rarr; `completed`).
+
+**Response (When Completed):**
+```json
+{
+  "task_id": "task_2d3c55b55242",
+  "status": "completed",
+  "stage": "completed",
+  "progress": 100,
+  "stage_message": "Successfully indexed 150 chunks into 'documents' in 1629.18ms.",
+  "duration_ms": 1629.18,
+  "chunks_created": 150,
+  "sample_chunks": [...]
+}
+```
+
+---
+
+### 4. List Active & Recent Tasks
+**`GET /api/v1/tasks`**
+
+Returns the list of all queued, processing, completed, and failed tasks with progress and timestamps.
+
+---
+
+### 5. List Documents in a Collection
+**`GET /api/v1/collections/{collection_name}/documents`**
+
+Retrieves all indexed documents in a collection with document ID, inferred/custom title, format (`.pdf`, `.md`, `.json`, etc.), total chunk count, preview snippet, and metadata.
+
+**Response:**
+```json
+{
+  "collection_name": "tech_docs",
+  "total_documents": 2,
+  "documents": [
+    {
+      "doc_id": "doc_9a8f2c1b",
+      "title": "AV Sensor Architecture",
+      "filename": "av_sensors.md",
+      "file_type": ".md",
+      "chunks_count": 4,
+      "ingested_at": "2026-09-26T15:00:00Z",
+      "sample_preview": "LiDAR and radar systems provide 360-degree sensor coverage...",
+      "metadata": {"title": "AV Sensor Architecture", "file_type": ".md"}
+    }
+  ]
+}
+```
+
+---
+
+### 6. Delete Single Document & Associated Chunks
+**`DELETE /api/v1/collections/{collection_name}/documents/{doc_id}`**
+
+Deletes all vector points for `doc_id` in Qdrant and removes chunks from BM25Plus, keeping all other documents in the collection intact.
+
+**Response:**
+```json
+{
+  "message": "Document 'doc_9a8f2c1b' and 4 chunk(s) successfully deleted.",
+  "collection_name": "tech_docs",
+  "doc_id": "doc_9a8f2c1b",
+  "deleted_chunks": 4
+}
+```
+
+---
+
+### 7. Hybrid Search & Re-ranking
 **`POST /api/v1/search`**
 
 Executes dense vector search and BM25 sparse search, fuses results with Reciprocal Rank Fusion, and scores with the Cross-Encoder.
@@ -252,7 +358,7 @@ Executes dense vector search and BM25 sparse search, fuses results with Reciproc
 
 ---
 
-### 3. Standalone Cross-Encoder Re-ranker
+### 8. Standalone Cross-Encoder Re-ranker
 **`POST /api/v1/rerank`**
 
 **Request Body:**
@@ -269,7 +375,7 @@ Executes dense vector search and BM25 sparse search, fuses results with Reciproc
 
 ---
 
-### 4. Health & Hardware Status
+### 9. Health & Hardware Status
 **`GET /api/v1/health`**
 
 Returns connectivity to Qdrant Docker container, hardware accelerators (CUDA/CPU), loaded model versions, and contextual provider.
