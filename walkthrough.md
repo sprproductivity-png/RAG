@@ -50,32 +50,32 @@ The engine is engineered as four decoupled services connected over a private Doc
 
 ```mermaid
 flowchart TD
-    Client["Client Browser (React SPA)"] -->|HTTP / :3000| Nginx["Nginx Reverse Proxy (Frontend Container)"]
-    Nginx -->|Static Assets| ReactUI["React 18 + Vite Web App"]
-    Nginx -->|/api/* Reverse Proxy (250MB limit)| FastAPI["FastAPI Backend Engine (:8000)"]
+    Client["Client Browser (React SPA)"] -->|"HTTP Port 3000"| Nginx["Nginx Reverse Proxy (Frontend Container)"]
+    Nginx -->|"Static Assets"| ReactUI["React 18 + Vite Web App"]
+    Nginx -->|"API Proxy (250MB limit)"| FastAPI["FastAPI Backend Engine (:8000)"]
 
     subgraph Backend_Services ["FastAPI Backend Services"]
-        FastAPI --> Endpoints["API Endpoints (/upload, /search, /tasks)"]
+        FastAPI --> Endpoints["API Endpoints: upload, search, tasks"]
         Endpoints --> TaskMgr["TaskManager & Background Worker"]
         Endpoints --> HybridEngine["Hybrid Search Engine"]
         Endpoints --> DocMgr["Document Manager"]
         
-        TaskMgr --> Parser["File Parser (PDF, MD, CSV, JSON)"]
-        Parser --> Chunker["Semantic Chunker (Cosine Breakpoints)"]
+        TaskMgr --> Parser["File Parser: PDF, MD, CSV, JSON"]
+        Parser --> Chunker["Semantic Chunker: Cosine Breakpoints"]
         Chunker --> Contextual["Anthropic Contextual Enrichment"]
-        Contextual --> Embedder["BGE-small Embedding Service (384-dim)"]
+        Contextual --> Embedder["BGE-small Embedding Service: 384-dim"]
         
         HybridEngine --> Embedder
-        HybridEngine --> CrossEncoder["Cross-Encoder Re-ranker (ms-marco)"]
+        HybridEngine --> CrossEncoder["Cross-Encoder Re-ranker: ms-marco"]
         HybridEngine --> Fusion["RRF / RSF Fusion Engine"]
     end
 
     subgraph State_Storage ["State & Persistence Stores"]
-        TaskMgr -->|Enqueue task_id / Task state| Redis["Redis 7 Container (:6379)"]
-        TaskMgr -->|Cache raw bytes| FileCache[("./data/file_cache")]
+        TaskMgr -->|"Enqueue task_id and state"| Redis["Redis 7 Container (:6379)"]
+        TaskMgr -->|"Cache raw bytes"| FileCache["Disk Cache: ./data/file_cache"]
         
-        FastAPI -->|Dense Vectors (Upsert / Search)| Qdrant["Qdrant Vector DB (:6333)"]
-        FastAPI -->|Sparse Inverted Index| BM25Store[("./data/bm25_indexes")]
+        FastAPI -->|"Dense Vectors: Upsert & Search"| Qdrant["Qdrant Vector DB (:6333)"]
+        FastAPI -->|"Sparse Inverted Index"| BM25Store["BM25 Store: ./data/bm25_indexes"]
     end
 ```
 
@@ -178,16 +178,16 @@ A critical architectural distinction in modern RAG is the difference between **B
 
 ```mermaid
 flowchart LR
-    subgraph BiEncoder ["Bi-Encoder (First-Stage Retrieval)"]
-        Q1["Query 'What is SLAM?'"] --> E1["Embedding Model"] --> V1["Vector v1"]
+    subgraph BiEncoder ["Bi-Encoder: First-Stage Retrieval"]
+        Q1["Query: What is SLAM?"] --> E1["Embedding Model"] --> V1["Vector v1"]
         D1["Passage Text"] --> E2["Embedding Model"] --> V2["Vector v2"]
-        V1 & V2 --> DotProd["Dot Product (Fast Vector Search)"]
+        V1 & V2 --> DotProd["Dot Product: Fast Vector Search"]
     end
 
-    subgraph CrossEncoder ["Cross-Encoder (Second-Stage Re-ranking)"]
-        Q2["Query"] & D2["Passage"] --> Concat["[CLS] Query [SEP] Passage [SEP]"]
-        Concat --> BERT["Cross-Attention Transformer (ms-marco)"]
-        BERT --> Score["Exact Relevance Score [0, 1]"]
+    subgraph CrossEncoder ["Cross-Encoder: Second-Stage Re-ranking"]
+        Q2["Query"] & D2["Passage"] --> Concat["Tokens: CLS + Query + SEP + Passage"]
+        Concat --> BERT["Cross-Attention Transformer: ms-marco"]
+        BERT --> Score["Exact Relevance Score 0 to 1"]
     end
 ```
 
@@ -221,11 +221,11 @@ sequenceDiagram
     participant Thresh as Percentile Threshold
     participant Chunks as Formed Semantic Chunks
 
-    Doc->>Sents: Split into discrete sentences (Regex)
+    Doc->>Sents: Split into discrete sentences
     Sents->>Emb: Compute dense embedding for each sentence
-    Emb->>Dist: Calculate pairwise cosine distances between consecutive sentences: d(s_i, s_{i+1})
-    Dist->>Thresh: Compute distance distribution & threshold at P-80 (80th percentile)
-    Thresh->>Chunks: Group consecutive sentences until distance exceeds threshold or max chars reached
+    Emb->>Dist: Calculate pairwise cosine distances
+    Dist->>Thresh: Compute distance distribution at 80th percentile
+    Thresh->>Chunks: Group consecutive sentences into chunks
 ```
 
 #### Mathematical Logic:
@@ -293,24 +293,24 @@ sequenceDiagram
     participant Worker as Background Ingestion Worker
 
     User->>Nginx: POST /api/v1/upload (Multipart file)
-    Note over Nginx,API: client_max_body_size 250M
+    Note over Nginx,API: Max Body Size 250MB
     Nginx->>API: Forward file stream
-    API->>Disk: Persist raw bytes: ./data/file_cache/{task_id}_{filename}
-    API->>Redis: Set task metadata: rag:task:{task_id}
+    API->>Disk: Persist raw bytes to disk cache
+    API->>Redis: Set task metadata in Redis
     API->>Redis: Push task_id: RPUSH rag:queue:ingestion
-    API-->>User: HTTP 202 Accepted (task_id, status: queued) [< 50ms]
+    API-->>User: HTTP 202 Accepted (task_id, status: queued)
     
-    loop Real-Time Ingestion (Decoupled)
+    loop Real-Time Ingestion
         Worker->>Redis: BLPOP rag:queue:ingestion
         Redis-->>Worker: task_id
         Worker->>Disk: Read cached file bytes
         Worker->>Worker: Parse -> Chunk -> Contextualize -> Embed -> Index
-        Worker->>Redis: Update state: rag:task:{task_id}
+        Worker->>Redis: Update state in Redis
     end
 
-    loop Background Polling (Global)
-        User->>API: GET /api/v1/tasks/{task_id}
-        API->>Redis: GET rag:task:{task_id}
+    loop Background Polling
+        User->>API: GET /api/v1/tasks/task_id
+        API->>Redis: GET rag:task:task_id
         Redis-->>API: Task JSON
         API-->>User: Task Status (progress, stage, sample_chunks)
     end
