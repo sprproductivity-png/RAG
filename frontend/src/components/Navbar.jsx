@@ -41,13 +41,23 @@ export default function Navbar({ health }) {
 
           {/* Redis Queue Status */}
           {health?.queue_backend && (
-            <div className={`flex items-center px-2.5 py-1 rounded-full text-xs font-medium border ${
-              health.redis_connected 
-                ? 'bg-rose-950/60 text-rose-300 border-rose-800/50' 
-                : 'bg-slate-800 text-slate-300 border-slate-700'
-            }`}>
+            <div 
+              title={health.redis_connected 
+                ? `Redis Ingestion Queue: ${health.queue_pending_count ?? 0} waiting, ${health.queue_processing_count ?? 0} in-flight, ${health.queue_completed_count ?? 0} completed` 
+                : 'Local in-memory fallback queue'}
+              className={`flex items-center px-2.5 py-1 rounded-full text-xs font-medium border ${
+                health.redis_connected 
+                  ? 'bg-rose-950/60 text-rose-300 border-rose-800/50' 
+                  : 'bg-slate-800 text-slate-300 border-slate-700'
+              }`}
+            >
               <span className={`w-2 h-2 rounded-full mr-1.5 ${health.redis_connected ? 'bg-rose-400 animate-pulse' : 'bg-slate-400'}`}></span>
               Queue: {health.redis_connected ? 'Redis' : 'Local'}
+              {health.redis_connected && (
+                <span className="ml-1.5 px-1.5 py-0.5 text-[10px] bg-rose-900/60 text-rose-200 rounded font-mono">
+                  {health.queue_pending_count ?? 0} wait &bull; {health.queue_processing_count ?? 0} run &bull; {health.queue_completed_count ?? 0} done
+                </span>
+              )}
             </div>
           )}
 

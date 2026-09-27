@@ -255,6 +255,7 @@ export default function App() {
               fetchCollections().then((d) => setCollections(d.collections || []));
             }}
             showToast={showToast}
+            health={health}
           />
         )}
 

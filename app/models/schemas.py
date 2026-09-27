@@ -151,6 +151,9 @@ class HealthResponse(BaseModel):
     contextual_provider: str
     redis_connected: Optional[bool] = None
     queue_backend: Optional[str] = None
+    queue_pending_count: Optional[int] = None
+    queue_processing_count: Optional[int] = None
+    queue_completed_count: Optional[int] = None
 
 # -------------------------------------------------------------
 # Document Management Schemas
@@ -205,4 +208,28 @@ class TaskListResponse(BaseModel):
     total_tasks: int
     tasks: List[TaskResponse]
 
+class QueueStatusResponse(BaseModel):
+    queue_backend: str
+    redis_connected: bool
+    pending_count: int
+    processing_count: int
+    completed_count: int
+    failed_count: int
+    active_processing_task_ids: List[str] = Field(default_factory=list)
+    recent_completed_task_ids: List[str] = Field(default_factory=list)
+    recent_failed_task_ids: List[str] = Field(default_factory=list)
 
+
+
+
+
+class AskRequest(SearchRequest):
+    provider: Optional[Literal["anthropic", "openai", "ollama", "local"]] = None
+    model: Optional[str] = None
+    temperature: float = 0.0
+
+class AskResponse(BaseModel):
+    query: str
+    answer: str
+    sources: List[ScoredChunk]
+    duration_ms: float

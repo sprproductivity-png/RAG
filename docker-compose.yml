@@ -1,12 +1,59 @@
 services:
+  # PostgreSQL Database for Metadata
+  db:
+    image: postgres:15-alpine
+    container_name: postgres-rag-db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: rag
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Dedicated Background Worker for Ingestion
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fastapi-rag-worker
+    restart: always
+    command: ["python", "-m", "app.worker"]
+    depends_on:
+      db:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://postgres:postgres@db:5432/rag
+      - QDRANT_URL=http://qdrant:6333
+      - REDIS_URL=redis://redis:6379/0
+      - EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
+      - CROSS_ENCODER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
+      - CONTEXTUAL_RETRIEVAL_PROVIDER=heuristic
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    volumes:
+      - bm25_data:/app/data/bm25_indexes
+      - ./data:/app/data
+
   # 1. Vector Database
   qdrant:
     image: qdrant/qdrant:v1.12.0
     container_name: qdrant-hybrid-rag
     restart: always
     ports:
-      - "6333:6333" # HTTP REST API & Web Dashboard
-      - "6334:6334" # gRPC API
+      - "6333:6333"
+      - "6334:6334"
     volumes:
       - qdrant_storage:/qdrant/storage
     environment:
@@ -27,7 +74,8 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    command: ["redis-server", "--appendonly", "yes"]
+      - ./docker/redis-entrypoint.sh:/usr/local/bin/redis-entrypoint.sh:ro
+    entrypoint: ["sh", "/usr/local/bin/redis-entrypoint.sh"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -44,16 +92,19 @@ services:
     ports:
       - "8000:8000"
     depends_on:
+      db:
+        condition: service_healthy
       qdrant:
         condition: service_healthy
       redis:
         condition: service_healthy
     environment:
+      - DATABASE_URL=postgresql+psycopg2://postgres:postgres@db:5432/rag
       - QDRANT_URL=http://qdrant:6333
       - REDIS_URL=redis://redis:6379/0
       - EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
       - CROSS_ENCODER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
-      - CONTEXTUAL_RETRIEVAL_PROVIDER=heuristic # or anthropic / openai / ollama
+      - CONTEXTUAL_RETRIEVAL_PROVIDER=heuristic
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - HOST=0.0.0.0
@@ -74,7 +125,21 @@ services:
     volumes:
       - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
-      - backend
+      backend:
+        condition: service_started
+
+  # 5. Redis Web GUI Inspector
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: redis-rag-commander
+    restart: always
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - "8081:8081"
+    depends_on:
+      redis:
+        condition: service_healthy
 
 volumes:
   qdrant_storage:
@@ -83,3 +148,5 @@ volumes:
     name: bm25_data
   redis_data:
     name: redis_data
+  pg_data:
+    name: pg_data

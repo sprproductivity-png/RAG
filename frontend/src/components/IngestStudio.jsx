@@ -44,6 +44,7 @@ export default function IngestStudio({
   setSampleChunks,
   onIngestSuccess,
   showToast,
+  health,
 }) {
   const [mode, setMode] = useState('upload'); // 'upload' or 'text'
   const [selectedFile, setSelectedFile] = useState(null);
@@ -463,6 +464,40 @@ export default function IngestStudio({
               </div>
             </div>
           )}
+
+          {/* Redis Queue Telemetry Card */}
+          <div className="glass-panel p-5 rounded-2xl border border-slate-800 space-y-3">
+            <div className="flex items-center justify-between">
+              <h4 className="font-semibold text-xs uppercase tracking-wider text-rose-400 flex items-center">
+                <span className="w-2 h-2 rounded-full mr-2 bg-rose-500 animate-pulse"></span>
+                Redis Queue Telemetry
+              </h4>
+              <span className="text-[10px] px-2 py-0.5 rounded font-mono bg-rose-950/80 text-rose-300 border border-rose-800/50">
+                {health?.redis_connected ? 'redis:7-alpine' : 'In-Memory Fallback'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="bg-slate-900/60 p-2.5 rounded-xl border border-slate-800">
+                <div className="text-lg font-bold text-amber-400 font-mono">
+                  {health?.queue_pending_count ?? 0}
+                </div>
+                <div className="text-[10px] text-slate-400">Waiting</div>
+              </div>
+              <div className="bg-slate-900/60 p-2.5 rounded-xl border border-slate-800">
+                <div className="text-lg font-bold text-sky-400 font-mono">
+                  {health?.queue_processing_count ?? 0}
+                </div>
+                <div className="text-[10px] text-slate-400">In-Flight</div>
+              </div>
+              <div className="bg-slate-900/60 p-2.5 rounded-xl border border-slate-800">
+                <div className="text-lg font-bold text-emerald-400 font-mono">
+                  {health?.queue_completed_count ?? 0}
+                </div>
+                <div className="text-[10px] text-slate-400">Completed</div>
+              </div>
+            </div>
+          </div>
 
           <div className="glass-panel p-5 rounded-2xl border border-slate-800 text-xs text-slate-400 space-y-2.5">
             <h4 className="font-semibold text-slate-200 flex items-center">

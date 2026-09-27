@@ -125,5 +125,15 @@ export async function deleteTaskApi(taskId) {
   return res.json();
 }
 
+export async function fetchQueueStatus() {
+  const res = await fetch(`${API_BASE}/queue`);
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || 'Failed to fetch queue status');
+  }
+  return res.json();
+}
+
+
 
 

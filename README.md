@@ -6,6 +6,8 @@ A production-ready, modular, and self-hosted **Hybrid RAG & Re-ranking Engine** 
 
 ## Key Features
 
+> **📖 Detailed Technical Guide:** Please refer to the [walkthrough.md](walkthrough.md) file for an in-depth architectural breakdown of every subsystem.
+
 1. **Interactive React Web Dashboard**:
    - Modern single-page application built with React 18, Vite, and Tailwind CSS.
    - Five dedicated studios:
@@ -15,7 +17,11 @@ A production-ready, modular, and self-hosted **Hybrid RAG & Re-ranking Engine** 
      - **Cross-Encoder Playground**: Compare query vs multiple arbitrary passages with immediate relevance logits.
      - **Collections & System Monitor**: Live vector counts, dimension stats, hardware accelerator badges (CUDA/GPU), and one-click collection deletion.
 
-2. **Dockerized Qdrant Vector DB**:
+2. **Enterprise Infrastructure (Qdrant, Redis, Postgres, Workers)**:
+   - Containerized deployment using `qdrant/qdrant:v1.12.0` with persistent volume storage.
+   - **PostgreSQL 15** for tracking asynchronous ingestion task states and metadata.
+   - **Redis 7** functioning as a high-performance message broker and task queue.
+   - **Dedicated Background Workers**: Ingestion processing is completely decoupled. Easily scale the background workers horizontally (`docker-compose up --scale worker=3`) for massive parallel processing.
    - Containerized deployment using official `qdrant/qdrant:v1.12.0` with persistent volume storage.
    - Built-in **Qdrant Web UI Dashboard** accessible at `http://localhost:6333/dashboard` for visual vector inspection.
    - Supports both containerized REST/gRPC connection and graceful embedded fallback for zero-dependency development.
@@ -30,7 +36,7 @@ A production-ready, modular, and self-hosted **Hybrid RAG & Re-ranking Engine** 
    - Situational summary is prepended (`<summary>\n\n<chunk_text>`) before both dense embedding and BM25 sparse indexing.
    - Multi-provider support:
      - **Anthropic Claude** (`claude-3-5-haiku` / `claude-3-haiku` via `ANTHROPIC_API_KEY`)
-     - **OpenAI / Ollama / Local LLM** (via `OPENAI_API_BASE` / `OLLAMA_BASE_URL`)
+     - **OpenAI / Ollama / Native Quantized GGUF** (Downloads and runs HuggingFace GGUF models offline via `llama-cpp-python`)
      - **Zero-Key Offline Heuristic Fallback** (TF-IDF keyword & document centrality) running 100% locally out-of-the-box.
 
 4. **Hybrid Retrieval (Dense + BM25)**:
@@ -358,7 +364,35 @@ Executes dense vector search and BM25 sparse search, fuses results with Reciproc
 
 ---
 
-### 8. Standalone Cross-Encoder Re-ranker
+
+### 8. Generative QA (RAG)
+**`POST /api/v1/ask`**
+
+Executes the full hybrid search pipeline and passes the contextualized chunks to a Generator LLM (Anthropic, OpenAI, Ollama, or Local GGUF) to generate a complete answer.
+
+**Request Body:**
+```json
+{
+  "collection_name": "tech_docs",
+  "query": "How long do the batteries last?",
+  "provider": "local",
+  "top_k": 3
+}
+```
+
+**Response:**
+```json
+{
+  "query": "How long do the batteries last?",
+  "answer": "According to the Acme Robotics Architecture document, the powertrain operates on LiFePO4 batteries offering 18 hours of autonomy with 35-minute fast charging.",
+  "sources": [ ... ],
+  "duration_ms": 2500.5
+}
+```
+
+---
+
+### 9. Standalone Cross-Encoder Re-ranker
 **`POST /api/v1/rerank`**
 
 **Request Body:**
@@ -375,7 +409,7 @@ Executes dense vector search and BM25 sparse search, fuses results with Reciproc
 
 ---
 
-### 9. Health & Hardware Status
+### 10. Health & Hardware Status
 **`GET /api/v1/health`**
 
 Returns connectivity to Qdrant Docker container, hardware accelerators (CUDA/CPU), loaded model versions, and contextual provider.

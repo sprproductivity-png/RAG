@@ -342,14 +342,38 @@ sequenceDiagram
 The backend runs an asynchronous background worker (`TaskManager._worker_loop`) that runs continuously in the FastAPI lifespan.
 
 #### Queue Data Structures in Redis:
-- **`rag:queue:ingestion` (List)**:
+- **`rag:queue:ingestion` (List - Pending)**:
   - Jobs are enqueued via `RPUSH rag:queue:ingestion {task_id}`.
-  - Workers dequeue jobs using `BLPOP rag:queue:ingestion 1`. The 1-second timeout enables cooperative cancellation and graceful shutdown.
+  - Workers dequeue jobs using `BLPOP rag:queue:ingestion 1`. As soon as a worker pops an item, it leaves this list to prevent duplicate worker execution.
+- **`rag:queue:processing` (Set - In-Flight)**:
+  - Tracks task IDs currently undergoing active parsing, chunking, or embedding.
+- **`rag:queue:completed` (List - History)**:
+  - Stores the last 100 successfully processed task IDs for instant queue inspection and audit logs.
+- **`rag:queue:failed` (List - Dead Letter)**:
+  - Stores task IDs that encountered parsing or vector exceptions.
 - **`rag:task:{task_id}` (String / Key-Value JSON)**:
   - Stores the full serialized state of each task (status, current stage, progress %, start/completion times, error logs, and generated sample chunks).
 - **`rag:tasks:index` (Sorted Set - ZSet)**:
   - Stores `{task_id: created_timestamp}` as score.
   - Enables `ZREVRANGEBYSCORE` to quickly return the most recent tasks for the dashboard history table.
+
+#### How to Inspect the Redis Queue:
+```bash
+# View all active Redis queue keys
+docker exec -it redis-rag-queue redis-cli keys "rag:*"
+
+# Inspect completed queue history
+docker exec -it redis-rag-queue redis-cli lrange rag:queue:completed 0 -1
+
+# Inspect in-flight processing jobs
+docker exec -it redis-rag-queue redis-cli smembers rag:queue:processing
+
+# Inspect full task payload JSON
+docker exec -it redis-rag-queue redis-cli get rag:task:<task_id>
+
+# Watch real-time Redis operations live as they execute
+docker exec -it redis-rag-queue redis-cli monitor
+```
 
 ---
 
@@ -484,6 +508,13 @@ The file parser ([app/services/file_parser.py](file:///c:/Users/User/PycharmProj
 
 ## 6. Storage & Database Subsystems
 
+### PostgreSQL Relational Database (Task & State Management)
+- **Database Engine**: PostgreSQL 15 (`postgres-rag-db` container)
+- **ORM Model**: SQLAlchemy 2.0 (`app.models.db`)
+- Tracks real-time states for the asynchronous queuing system (`DBTask` model).
+- Eliminates JSON file concurrency issues and scales beautifully across multiple parallel ingestion workers.
+
+
 ### Qdrant Vector Database
 - **Collection Configuration**:
   - Vector Size: `384` (matching BGE-small).
@@ -561,13 +592,14 @@ The file parser ([app/services/file_parser.py](file:///c:/Users/User/PycharmProj
 | **`/api/v1/collections/{name}`** | `DELETE` | `200 OK` | Drops collection from both Qdrant and BM25 index. | Path parameter: `name`. |
 | **`/api/v1/collections/{name}/documents`** | `GET` | `200 OK` | Lists all distinct aggregated documents in a collection with metadata and chunk counts. | Path parameter: `name`. |
 | **`/api/v1/collections/{name}/documents/{id}`** | `DELETE` | `200 OK` | Deletes a single document and its chunks from Qdrant and BM25 without dropping the collection. | Path parameters: `name`, `id`. |
+| **`/api/v1/queue`** | `GET` | `200 OK` | Retrieves real-time Redis queue state (pending, in-flight, completed counts & IDs). | None. |
 | **`/api/v1/health`** | `GET` | `200 OK` | Subsystem health status (Qdrant connection, Redis queue status, loaded models, GPU/CPU). | None. |
 
 ---
 
 ## 8. Setup, Deployment & Verification
 
-### Option 1: Docker Compose (Starts All 4 Tiers)
+### Option 1: Docker Compose (Starts All 5 Tiers)
 The entire stack starts with a single command:
 ```bash
 docker compose up -d --build
@@ -576,8 +608,10 @@ docker compose up -d --build
 #### Access Points:
 - **React Frontend Dashboard**: [http://localhost:3000](http://localhost:3000)
 - **FastAPI REST API & Swagger UI**: [http://localhost:8000/docs](http://localhost:8000/docs)
-- **Qdrant Web Console**: [http://localhost:6333/dashboard](http://localhost:6333/dashboard)
-- **Redis Queue**: Port `6379` (ping via `docker exec -it redis-rag-queue redis-cli ping`)
+- **Qdrant Vector DB Console**: [http://localhost:6333/dashboard](http://localhost:6333/dashboard)
+- **Redis Web GUI Inspector (Redis Commander)**: [http://localhost:8081](http://localhost:8081)
+- **Redis Queue Port**: Port `6379` (ping via `docker exec -it redis-rag-queue redis-cli ping`)
+- **Live Redis Queue Container Logs**: `docker logs -f redis-rag-queue`
 
 ---
 

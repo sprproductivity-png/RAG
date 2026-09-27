@@ -24,6 +24,7 @@ from app.models.schemas import (
     DeleteDocumentResponse,
     TaskResponse,
     TaskListResponse,
+    QueueStatusResponse,
 )
 from app.services.file_parser import parse_uploaded_file
 from app.services.embeddings import get_embedding_service
@@ -34,6 +35,10 @@ from app.services.contextual import enrich_chunks_with_context
 from app.services.reranker import get_reranker_service
 from app.services.hybrid import get_hybrid_engine
 from app.services.task_manager import get_task_manager
+from app.models.schemas import AskRequest, AskResponse
+from app.services.generator import get_generator
+import asyncio
+
 
 router = APIRouter()
 
@@ -467,6 +472,19 @@ async def delete_document(collection_name: str, doc_id: str):
     )
 
 # -------------------------------------------------------------
+# Queue Status Endpoint
+# -------------------------------------------------------------
+@router.get(
+    "/queue",
+    response_model=QueueStatusResponse,
+    summary="Real-time Redis queue state and task metrics"
+)
+async def get_queue_status():
+    task_manager = get_task_manager()
+    stats = await task_manager.get_queue_stats()
+    return QueueStatusResponse(**stats)
+
+# -------------------------------------------------------------
 # Health Check Endpoint
 # -------------------------------------------------------------
 @router.get(
@@ -483,6 +501,7 @@ async def health_check():
     task_manager = get_task_manager()
     redis_connected = task_manager.redis_available
     queue_backend = "redis" if redis_connected else "in_memory"
+    queue_stats = await task_manager.get_queue_stats()
 
     return HealthResponse(
         status="healthy" if is_connected else "degraded",
@@ -498,5 +517,76 @@ async def health_check():
         contextual_provider=settings.CONTEXTUAL_RETRIEVAL_PROVIDER,
         redis_connected=redis_connected,
         queue_backend=queue_backend,
+        queue_pending_count=queue_stats.get("pending_count", 0),
+        queue_processing_count=queue_stats.get("processing_count", 0),
+        queue_completed_count=queue_stats.get("completed_count", 0),
     )
 
+
+
+@router.post(
+    "/ask",
+    response_model=AskResponse,
+    summary="Generative QA (RAG) using Hybrid Search"
+)
+async def ask_question(request: AskRequest):
+    t_start = time.perf_counter()
+    
+    # 1. Retrieve contexts
+    hybrid_engine = get_hybrid_engine()
+    results = hybrid_engine.search(
+        query=request.query,
+        collection_name=request.collection_name,
+        top_k=request.top_k,
+        dense_top_k=request.dense_top_k,
+        sparse_top_k=request.sparse_top_k,
+        rrf_k=request.rrf_k,
+        dense_weight=request.dense_weight,
+        sparse_weight=request.sparse_weight,
+        fusion_method=request.fusion_method,
+        apply_reranking=request.apply_reranking,
+        filter_metadata=request.filter_metadata,
+    )
+    
+    scored_chunks = [
+        ScoredChunk(
+            chunk_id=r["chunk_id"],
+            doc_id=r.get("doc_id", ""),
+            chunk_index=r.get("chunk_index", 0),
+            text=r.get("text", ""),
+            context_summary=r.get("context_summary"),
+            contextualized_text=r.get("contextualized_text"),
+            metadata=r.get("metadata", {}),
+            dense_rank=r.get("dense_rank"),
+            dense_score=r.get("dense_score"),
+            bm25_rank=r.get("bm25_rank"),
+            bm25_score=r.get("bm25_score"),
+            fusion_rank=r.get("fusion_rank"),
+            fusion_score=r.get("fusion_score"),
+            cross_encoder_score=r.get("cross_encoder_score"),
+            final_score=r.get("final_score", 0.0),
+        )
+        for r in results["results"]
+    ]
+    
+    # 2. Generate Answer
+    generator = get_generator(provider=request.provider, model=request.model)
+    loop = asyncio.get_running_loop()
+    
+    # Run sync LLM generation in threadpool
+    answer = await loop.run_in_executor(
+        None, 
+        generator.generate_answer, 
+        request.query, 
+        results["results"],
+        request.temperature
+    )
+    
+    duration_ms = (time.perf_counter() - t_start) * 1000.0
+    
+    return AskResponse(
+        query=request.query,
+        answer=answer,
+        sources=scored_chunks,
+        duration_ms=round(duration_ms, 2)
+    )

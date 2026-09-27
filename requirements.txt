@@ -16,4 +16,8 @@ pytest-asyncio>=0.24.0
 python-multipart>=0.0.9
 pypdf>=5.0.0
 redis>=5.0.0
-
+sqlalchemy
+psycopg2-binary
+asyncpg
+llama-cpp-python
+huggingface_hub

@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     # Pointing to Docker container by default (http://localhost:6333)
     QDRANT_URL: str = Field(default="http://localhost:6333", description="URL to Qdrant Docker or remote instance")
     QDRANT_API_KEY: Optional[str] = Field(default=None, description="Optional API key for Qdrant")
-    QDRANT_TIMEOUT: float = 10.0
+    QDRANT_TIMEOUT: float = 120.0
     QDRANT_LOCAL_PATH: str = "./data/qdrant_storage"
     ENABLE_LOCAL_QDRANT_FALLBACK: bool = Field(
         default=True,
@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     OPENAI_MODEL: str = "gpt-4o-mini"
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "llama3.2:latest"
+    # Local LLM Config (llama.cpp)
+    LOCAL_LLM_REPO: str = "TheBloke/Mistral-7B-Instruct-v0.2-GGUF"
+    LOCAL_LLM_FILE: str = "mistral-7b-instruct-v0.2.Q4_K_M.gguf"
+
 
     # Semantic Chunking Defaults
     CHUNK_SIMILARITY_PERCENTILE_THRESHOLD: float = 80.0

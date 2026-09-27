@@ -1,3 +1,4 @@
+from app.models.db import init_db
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI
@@ -29,13 +30,17 @@ async def lifespan(app: FastAPI):
     )
 
     # Start Ingestion Queue Worker
+    init_db()
     task_manager = get_task_manager()
-    task_manager.start_worker()
+    import os
+    if os.getenv("WORKER_MODE", "False") == "True":
+        task_manager.start_worker()
 
     yield
 
     logger.info("Shutting down Hybrid RAG Engine...")
-    await task_manager.stop_worker()
+    if os.getenv("WORKER_MODE", "False") == "True":
+        await task_manager.stop_worker()
 
 
 app = FastAPI(
