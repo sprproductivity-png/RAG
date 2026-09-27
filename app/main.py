@@ -23,6 +23,12 @@ async def lifespan(app: FastAPI):
     emb_service = get_embedding_service()
     reranker = get_reranker_service()
     vector_db = get_vector_db_service()
+    
+    import asyncio
+    from app.services.generator import get_local_llm
+    logger.info("Pre-loading Local LLM model asynchronously on startup...")
+    await asyncio.to_thread(get_local_llm)
+    
     is_connected, mode, url = vector_db.health_check()
     logger.info(
         f"Hybrid RAG Engine started. Embedding: {emb_service.model_name} ({emb_service.dimension}d), "

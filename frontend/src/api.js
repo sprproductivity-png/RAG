@@ -137,3 +137,15 @@ export async function fetchQueueStatus() {
 
 
 
+export async function executeAskApi(payload) {
+  const res = await fetch(`${API_BASE}/ask`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || 'Ask request failed');
+  }
+  return res.json();
+}

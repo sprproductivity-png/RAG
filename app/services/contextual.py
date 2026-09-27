@@ -64,7 +64,7 @@ class AnthropicContextualizer(BaseContextualizer):
                 model=self.model,
                 max_tokens=150,
                 temperature=0.0,
-                messages=[{"role": "user", "content": prompt}]
+                messages=[{"role": "user", "content": prompt}]  # type: ignore
             )
             return response.content[0].text.strip()
         except Exception as e:

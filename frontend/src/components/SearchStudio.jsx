@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Search, Sliders, Sparkles, Clock, Layers, ArrowUpRight } from 'lucide-react';
-import { executeSearchApi } from '../api';
+import { executeSearchApi, executeAskApi } from '../api';
 
 export default function SearchStudio({ collections, showToast }) {
   const [query, setQuery] = useState('How long do the batteries last and what is the recharge time?');
@@ -14,8 +14,53 @@ export default function SearchStudio({ collections, showToast }) {
   const [fusionMethod, setFusionMethod] = useState('rrf');
   const [applyReranking, setApplyReranking] = useState(true);
 
+  const [askProvider, setAskProvider] = useState('local');
+  const [askResult, setAskResult] = useState(null);
+  const [isAsking, setIsAsking] = useState(false);
+
   const [loading, setLoading] = useState(false);
   const [searchResult, setSearchResult] = useState(null);
+
+  const handleAsk = async (overrideQuery) => {
+    const q = overrideQuery || query;
+    if (!q.trim()) {
+      showToast('Please enter a query', true);
+      return;
+    }
+
+    setIsAsking(true);
+    setSearchResult(null);
+    setAskResult(null);
+    try {
+      const data = await executeAskApi({
+        query: q,
+        collection_name: collection,
+        top_k: parseInt(topK),
+        dense_top_k: parseInt(denseTopK),
+        sparse_top_k: parseInt(sparseTopK),
+        rrf_k: parseInt(rrfK),
+        dense_weight: parseFloat(denseWeight),
+        sparse_weight: parseFloat(sparseWeight),
+        fusion_method: fusionMethod,
+        enable_reranking: applyReranking,
+        provider: askProvider,
+        temperature: 0.1,
+      });
+      setAskResult(data);
+      setSearchResult({
+        timing_ms: { total_ms: data.duration_ms },
+        total_fused_candidates: data.sources.length,
+        total_dense_candidates: 0,
+        total_sparse_candidates: 0,
+        results: data.sources
+      });
+      showToast('Answer generated successfully!');
+    } catch (error) {
+      showToast(error.message, true);
+    } finally {
+      setIsAsking(false);
+    }
+  };
 
   const handleSearch = async (overrideQuery) => {
     const q = overrideQuery || query;
@@ -25,6 +70,7 @@ export default function SearchStudio({ collections, showToast }) {
     }
 
     setLoading(true);
+    setAskResult(null);
     try {
       const data = await executeSearchApi({
         query: q,
@@ -210,13 +256,13 @@ export default function SearchStudio({ collections, showToast }) {
                   type="text"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                  onKeyDown={(e) => e.key === 'Enter' && handleAsk()}
                   placeholder="Ask a question or enter keywords to retrieve..."
                   className="w-full bg-slate-900/90 border border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
                 />
               </div>
               <button
-                onClick={() => handleSearch()}
+                onClick={() => handleAsk()}
                 disabled={loading}
                 className="px-6 py-3 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-semibold text-sm shadow-lg shadow-indigo-500/25 transition flex items-center disabled:opacity-50"
               >
@@ -232,7 +278,7 @@ export default function SearchStudio({ collections, showToast }) {
                 onClick={() => {
                   const q = 'How long do the batteries last and what is the recharge time?';
                   setQuery(q);
-                  handleSearch(q);
+                  handleAsk(q);
                 }}
                 className="px-2.5 py-1 rounded-md bg-slate-800/80 hover:bg-slate-700/80 text-slate-300 transition"
               >
@@ -242,7 +288,7 @@ export default function SearchStudio({ collections, showToast }) {
                 onClick={() => {
                   const q = 'How do the robots prevent collisions and deadlocks in narrow aisles?';
                   setQuery(q);
-                  handleSearch(q);
+                  handleAsk(q);
                 }}
                 className="px-2.5 py-1 rounded-md bg-slate-800/80 hover:bg-slate-700/80 text-slate-300 transition"
               >
@@ -252,7 +298,7 @@ export default function SearchStudio({ collections, showToast }) {
                 onClick={() => {
                   const q = 'Explain the SLAM positioning accuracy and sensors.';
                   setQuery(q);
-                  handleSearch(q);
+                  handleAsk(q);
                 }}
                 className="px-2.5 py-1 rounded-md bg-slate-800/80 hover:bg-slate-700/80 text-slate-300 transition"
               >
@@ -261,7 +307,7 @@ export default function SearchStudio({ collections, showToast }) {
             </div>
           </div>
 
-          {/* Search Results */}
+          {/* AI Answer & Sources */}
           {searchResult && (
             <div className="space-y-4">
               {/* Latency Banner */}
@@ -358,9 +404,9 @@ export default function SearchStudio({ collections, showToast }) {
               <div className="w-12 h-12 rounded-2xl bg-indigo-950/60 border border-indigo-800/40 text-indigo-400 flex items-center justify-center mx-auto mb-3">
                 <Search className="w-6 h-6" />
               </div>
-              <h4 className="font-semibold text-slate-300">Ready to search</h4>
+              <h4 className="font-semibold text-slate-300">Ready to Ask</h4>
               <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
-                Execute Dense and BM25 sparse retrieval fused with Cross-Encoder re-ranking.
+                Ask questions and get AI-generated answers based strictly on your source documents.
               </p>
             </div>
           )}
