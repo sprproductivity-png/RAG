@@ -297,17 +297,7 @@ class TaskManager:
         except Exception as e:
             logger.debug(f"Redis queue state sync: {e}")
 
-    async def _sync_task(self, task: IngestionTask):
-        """Synchronizes task state to memory, disk history, and Redis (if connected)."""
-        self.tasks[task.task_id] = task
-        if self.redis_available and self.redis:
-            try:
-                data_str = json.dumps(asdict(task))
-                await self.redis.set(f"rag:task:{task.task_id}", data_str)
-                await self.redis.zadd("rag:tasks:index", {task.task_id: time.time()})
-            except Exception as e:
-                logger.warning(f"Failed to sync task {task.task_id} to Redis: {e}")
-        self._save_history()
+
 
     def start_worker(self):
         if self.worker_task is None or self.worker_task.done():
@@ -627,81 +617,6 @@ class TaskManager:
                 logger.info(f"Queued file ingestion task {task_id} in in-memory queue.")
 
         return task.to_response()
-
-    async def get_task_obj(self, task_id: str) -> Optional[IngestionTask]:
-        """Fetches IngestionTask object from memory or Redis."""
-        task = self.tasks.get(task_id)
-        if task:
-            return task
-        if self.redis_available and self.redis:
-            try:
-                raw = await self.redis.get(f"rag:task:{task_id}")
-                if raw:
-                    data = json.loads(raw)
-                    task = IngestionTask(**data)
-                    self.tasks[task_id] = task
-                    return task
-            except Exception as e:
-                logger.debug(f"Redis get_task_obj error: {e}")
-        return None
-
-    async def get_task(self, task_id: str) -> Optional[TaskResponse]:
-        task = await self.get_task_obj(task_id)
-        if task:
-            return task.to_response()
-        return None
-
-    async def list_tasks(self, limit: int = 50) -> List[TaskResponse]:
-        if self.redis_available and self.redis:
-            try:
-                task_ids = await self.redis.zrevrange("rag:tasks:index", 0, limit - 1)
-                if task_ids:
-                    keys = [f"rag:task:{tid}" for tid in task_ids]
-                    records = await self.redis.mget(keys)
-                    for rec in records:
-                        if rec:
-                            try:
-                                d = json.loads(rec)
-                                t = IngestionTask(**d)
-                                self.tasks[t.task_id] = t
-                            except Exception:
-                                pass
-            except Exception as e:
-                logger.debug(f"Redis list_tasks error: {e}")
-
-        sorted_tasks = sorted(
-            self.tasks.values(),
-            key=lambda x: x.created_at,
-            reverse=True
-        )[:limit]
-        return [t.to_response() for t in sorted_tasks]
-
-    async def delete_task(self, task_id: str) -> bool:
-        deleted = False
-        if task_id in self.tasks:
-            task = self.tasks.pop(task_id)
-            try:
-                p = Path(task.cache_path)
-                if p.exists():
-                    p.unlink()
-            except Exception:
-                pass
-            deleted = True
-
-        if self.redis_available and self.redis:
-            try:
-                await self.redis.delete(f"rag:task:{task_id}")
-                await self.redis.zrem("rag:tasks:index", task_id)
-                await self.redis.srem("rag:queue:processing", task_id)
-                await self.redis.lrem("rag:queue:completed", 0, task_id)
-                await self.redis.lrem("rag:queue:failed", 0, task_id)
-                await self.redis.lrem("rag:queue:ingestion", 0, task_id)
-                deleted = True
-            except Exception:
-                pass
-
-        self._save_history()
-        return deleted
 
     async def get_queue_stats(self) -> Dict[str, Any]:
         """Returns real-time queue health and breakdown across pending, processing, completed, and failed states."""
