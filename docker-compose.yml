@@ -42,6 +42,8 @@ services:
       - CONTEXTUAL_RETRIEVAL_PROVIDER=heuristic
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - HF_TOKEN=${HF_TOKEN:-}
+      - HF_HOME=/app/data/models
     volumes:
       - bm25_data:/app/data/bm25_indexes
       - ./data:/app/data
@@ -107,6 +109,8 @@ services:
       - CONTEXTUAL_RETRIEVAL_PROVIDER=heuristic
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - HF_TOKEN=${HF_TOKEN:-}
+      - HF_HOME=/app/data/models
       - HOST=0.0.0.0
       - PORT=8000
     volumes:

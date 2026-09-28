@@ -26,8 +26,8 @@ class EmbeddingService:
             self.device = device
 
         logger.info(f"Loading dense embedding model '{self.model_name}' on device '{self.device}'...")
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        self.model = AutoModel.from_pretrained(self.model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, token=settings.HF_TOKEN)
+        self.model = AutoModel.from_pretrained(self.model_name, token=settings.HF_TOKEN)
         self.model.to(self.device)
         self.model.eval()
 

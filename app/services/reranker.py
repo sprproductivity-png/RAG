@@ -17,8 +17,8 @@ class CrossEncoderReranker:
             self.device = device
 
         logger.info(f"Loading Cross-Encoder model '{self.model_name}' on device '{self.device}'...")
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        self.model = AutoModelForSequenceClassification.from_pretrained(self.model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, token=settings.HF_TOKEN)
+        self.model = AutoModelForSequenceClassification.from_pretrained(self.model_name, token=settings.HF_TOKEN)
         self.model.to(self.device)
         self.model.eval()
         logger.info("Cross-Encoder model loaded successfully.")

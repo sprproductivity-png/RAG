@@ -30,7 +30,7 @@ def get_local_llm():
             filename = settings.LOCAL_LLM_FILE
             
             logger.info(f"Downloading/Loading local quantized model: {repo_id}/{filename}...")
-            model_path = hf_hub_download(repo_id=repo_id, filename=filename)
+            model_path = hf_hub_download(repo_id=repo_id, filename=filename, token=settings.HF_TOKEN)
             
             logger.info("Initializing Llama engine...")
             _local_llm = Llama(

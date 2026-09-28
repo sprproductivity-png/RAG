@@ -425,6 +425,14 @@ class TaskManager:
             task.error = str(e)
             task.stage_message = f"Failed during stage '{task.stage}': {str(e)}"
             await self._sync_task(task)
+
+            try:
+                p = Path(task.cache_path)
+                if p.exists():
+                    p.unlink()
+            except Exception:
+                pass
+
             if self.redis_available and self.redis:
                 try:
                     await self.redis.srem("rag:queue:processing", task.task_id)
