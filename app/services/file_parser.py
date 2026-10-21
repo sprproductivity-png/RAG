@@ -1,3 +1,33 @@
+import re
+
+def _clean_extracted_text(text: str) -> str:
+    """Cleans up broken lines and irregular whitespace from PDF/document extraction."""
+    if not text:
+        return ""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    raw_lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if raw_lines:
+        avg_words = sum(len(line.split()) for line in raw_lines) / len(raw_lines)
+        if avg_words < 3.5:
+            tokens = []
+            for line in raw_lines:
+                if line.startswith("●") or line.startswith("--- Page") or line.startswith("- ") or line.startswith("* "):
+                    tokens.append("\n\n" + line + "\n")
+                elif re.match(r"^\d+\.\s", line):
+                    tokens.append("\n\n" + line + "\n")
+                else:
+                    tokens.append(line)
+            joined = " ".join(tokens)
+            joined = re.sub(r"[ \t]+", " ", joined)
+            joined = re.sub(r"\n +", "\n", joined)
+            joined = re.sub(r" +\n", "\n", joined)
+            joined = re.sub(r"\n{3,}", "\n\n", joined)
+            return joined.strip()
+            
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
 import io
 import os
 import json
@@ -93,7 +123,7 @@ def parse_uploaded_file(file_bytes: bytes, filename: str) -> Tuple[str, str, Dic
             except UnicodeDecodeError:
                 extracted_text = file_bytes.decode("latin-1", errors="replace")
 
-        cleaned_text = extracted_text.strip()
+        cleaned_text = _clean_extracted_text(extracted_text)
         if not cleaned_text:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

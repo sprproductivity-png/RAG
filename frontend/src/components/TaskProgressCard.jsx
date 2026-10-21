@@ -1,5 +1,5 @@
 import React from 'react';
-import { CheckCircle2, Clock, AlertTriangle, Loader2, Sparkles, Layers, FileText, Database, ShieldCheck } from 'lucide-react';
+import { CheckCircle2, Clock, AlertTriangle, Loader2, Sparkles, Layers, FileText, Database, ShieldCheck, RefreshCw } from 'lucide-react';
 
 const STAGES = [
   { id: 'queued', label: '1. Cached', icon: Clock },
@@ -10,7 +10,7 @@ const STAGES = [
   { id: 'indexing', label: '6. Dual Indexing', icon: Database },
 ];
 
-export default function TaskProgressCard({ task, onClear }) {
+export default function TaskProgressCard({ task, onClear, onRetry }) {
   if (!task) return null;
 
   const isCompleted = task.status === 'completed';
@@ -79,6 +79,16 @@ export default function TaskProgressCard({ task, onClear }) {
           }`}>
             {task.status}
           </span>
+          {isFailed && onRetry && (
+            <button
+              onClick={() => onRetry(task.task_id)}
+              className="text-[11px] font-semibold text-amber-300 hover:text-amber-100 px-2.5 py-1 rounded bg-amber-950/80 border border-amber-800/60 hover:bg-amber-900/60 transition flex items-center space-x-1"
+              title="Resume ingestion from last saved checkpoint"
+            >
+              <RefreshCw className="w-3 h-3 mr-1" />
+              <span>Resume from Checkpoint</span>
+            </button>
+          )}
           {onClear && (
             <button
               onClick={onClear}

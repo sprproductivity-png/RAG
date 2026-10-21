@@ -32,7 +32,12 @@ class EmbeddingService:
         self.model.eval()
 
         self.dimension = self.model.config.hidden_size
-        logger.info(f"Dense embedding model loaded successfully. Vector dimension: {self.dimension}")
+        self.is_bge_model = "bge" in self.model_name.lower()
+        self.query_instruction = "Represent this sentence for searching relevant passages: " if self.is_bge_model else ""
+        logger.info(
+            f"Dense embedding model loaded successfully. Vector dimension: {self.dimension}. "
+            f"BGE query instruction active: {bool(self.query_instruction)}"
+        )
 
     def embed_texts(self, texts: List[str], batch_size: Optional[int] = None) -> np.ndarray:
         if not texts:
@@ -41,8 +46,11 @@ class EmbeddingService:
         batch_size = batch_size or settings.EMBEDDING_BATCH_SIZE
         all_embeddings = []
 
-        for i in range(0, len(texts), batch_size):
-            batch_texts = texts[i : i + batch_size]
+        # Sanitize texts
+        cleaned_texts = [t.strip() if (t and t.strip()) else " " for t in texts]
+
+        for i in range(0, len(cleaned_texts), batch_size):
+            batch_texts = cleaned_texts[i : i + batch_size]
             encoded = self.tokenizer(
                 batch_texts,
                 padding=True,
@@ -62,8 +70,15 @@ class EmbeddingService:
         return np.vstack(all_embeddings).astype(np.float32)
 
     def embed_query(self, query: str) -> List[float]:
+        q = (query or "").strip()
+        if not q:
+            q = " "
+        
+        # BGE models require query instruction prefix for asymmetric search
+        formatted_query = f"{self.query_instruction}{q}" if self.query_instruction else q
+
         encoded = self.tokenizer(
-            [query],
+            [formatted_query],
             padding=True,
             truncation=True,
             max_length=512,
@@ -88,4 +103,3 @@ def get_embedding_service() -> EmbeddingService:
     if _embedding_instance is None:
         _embedding_instance = EmbeddingService()
     return _embedding_instance
-

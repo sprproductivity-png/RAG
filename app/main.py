@@ -79,13 +79,16 @@ if STATIC_DIR.exists():
     if assets_dir.exists():
         app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
-@app.get("/", include_in_schema=False)
-@app.get("/ui", include_in_schema=False)
+@app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
+@app.api_route("/ui", methods=["GET", "HEAD"], include_in_schema=False)
 async def serve_ui():
     """Serves the interactive Frontend Web Dashboard."""
     index_file = STATIC_DIR / "index.html"
     if index_file.exists():
-        return FileResponse(str(index_file))
+        return FileResponse(
+            str(index_file),
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate"}
+        )
     return RedirectResponse(url="/docs")
 
 if __name__ == "__main__":

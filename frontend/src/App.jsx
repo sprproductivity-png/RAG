@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Search, UploadCloud, Layers, Database, Files, Loader2 } from 'lucide-react';
+import { Search, UploadCloud, Layers, Database, Files, Loader2, X } from 'lucide-react';
 import Navbar from './components/Navbar';
 import SearchStudio from './components/SearchStudio';
 import IngestStudio from './components/IngestStudio';
 import RerankPlayground from './components/RerankPlayground';
 import CollectionsView from './components/CollectionsView';
 import DocumentManager from './components/DocumentManager';
-import { fetchHealth, fetchCollections, fetchTasks, fetchTaskStatus } from './api';
+import { fetchHealth, fetchCollections, fetchTasks, fetchTaskStatus, deleteTaskApi } from './api';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('search');
@@ -149,11 +149,32 @@ export default function App() {
 
             <div className="flex items-center space-x-2 shrink-0">
               <button
-                onClick={() => setActiveTab('ingest')}
-                className="px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-md shadow-indigo-600/20 transition flex items-center space-x-1"
+                onClick={() => {
+                  setActiveTab('ingest');
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }}
+                className="px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-md shadow-indigo-600/20 transition flex items-center space-x-1.5"
               >
-                <span>View in Studio</span>
+                <span>View Ingest Progress</span>
                 <span className="text-xs">&rarr;</span>
+              </button>
+              <button
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  if (activeTask) {
+                    try {
+                      await deleteTaskApi(activeTask.task_id);
+                      showToast(`Dismissed task "${activeTask.filename}"`);
+                    } catch (_) {}
+                    setActiveTask(null);
+                    localStorage.removeItem('rag_active_task_id');
+                    loadTasks();
+                  }
+                }}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-rose-400 hover:bg-rose-950/40 border border-slate-800 hover:border-rose-800/50 transition"
+                title="Dismiss or cancel this task"
+              >
+                <X className="w-4 h-4" />
               </button>
             </div>
           </div>

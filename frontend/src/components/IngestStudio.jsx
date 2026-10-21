@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { UploadCloud, FileText, CheckCircle2, Sparkles, BookOpen, Upload, File, X, AlertCircle } from 'lucide-react';
-import { executeIngestApi, uploadFileApi, fetchTaskStatus, fetchTasks } from '../api';
+import { UploadCloud, FileText, CheckCircle2, Sparkles, BookOpen, Upload, File, X, AlertCircle, Wrench, RotateCcw, Loader2 } from 'lucide-react';
+import { executeIngestApi, uploadFileApi, fetchTaskStatus, fetchTasks, retryTaskApi, triggerHousekeepApi } from '../api';
 import TaskProgressCard from './TaskProgressCard';
 import TaskHistoryTable from './TaskHistoryTable';
 
@@ -73,6 +73,17 @@ export default function IngestStudio({
     setText(preset.text);
     setMode('text');
     showToast(`Loaded preset: ${preset.title}`);
+  };
+
+  const handleRetryTask = async (taskId) => {
+    try {
+      const updated = await retryTaskApi(taskId);
+      setActiveTask(updated);
+      showToast(`Resuming ingestion for "${updated.filename}" from last checkpoint...`);
+      if (loadTasks) loadTasks();
+    } catch (err) {
+      showToast(err.message, true);
+    }
   };
 
   const handleFileDrop = (e) => {
@@ -174,6 +185,7 @@ export default function IngestStudio({
         <TaskProgressCard
           task={activeTask}
           onClear={() => setActiveTask(null)}
+          onRetry={handleRetryTask}
         />
       )}
 
@@ -428,6 +440,7 @@ export default function IngestStudio({
               setActiveTask(t);
               if (t.sample_chunks) setSampleChunks(t.sample_chunks);
             }}
+            onRetry={handleRetryTask}
             showToast={showToast}
           />
         </div>
@@ -496,6 +509,29 @@ export default function IngestStudio({
                 </div>
                 <div className="text-[10px] text-slate-400">Completed</div>
               </div>
+            </div>
+
+            {/* Quick Self-Healing & Housekeep Action */}
+            <div className="pt-1">
+              <button
+                type="button"
+                onClick={handleQuickHousekeep}
+                disabled={runningHousekeep}
+                className="w-full py-1.5 px-3 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-emerald-600/50 text-slate-300 hover:text-emerald-300 text-xs font-medium transition flex items-center justify-center space-x-1.5 disabled:opacity-50"
+                title="Auto-retry failed tasks, prune finished cache, and heal queue state"
+              >
+                {runningHousekeep ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-400" />
+                    <span>Housekeeping in Progress...</span>
+                  </>
+                ) : (
+                  <>
+                    <Wrench className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Run Housekeeper & Self-Heal</span>
+                  </>
+                )}
+              </button>
             </div>
           </div>
 

@@ -31,8 +31,14 @@ STOPWORDS = {
 
 def tokenize_text(text: str) -> List[str]:
     """Tokenizes text into lowercase words with stopword removal."""
+    if not text:
+        return []
     words = re.findall(r'\b[a-zA-Z0-9_\-\.]+\b', text.lower())
-    return [w for w in words if len(w) > 1 and w not in STOPWORDS]
+    filtered = [w for w in words if len(w) > 1 and w not in STOPWORDS]
+    # If all tokens were stopwords (e.g. short query), fallback to all length > 1 words
+    if not filtered and words:
+        return [w for w in words if len(w) > 1]
+    return filtered
 
 class BM25CollectionIndex:
     def __init__(self, collection_name: str):
@@ -49,7 +55,7 @@ class BM25CollectionIndex:
                 with open(self.index_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 self.doc_records = data.get("records", [])
-                self.tokenized_corpus = [tokenize_text(r["index_text"]) for r in self.doc_records]
+                self.tokenized_corpus = [tokenize_text(r.get("index_text", "")) for r in self.doc_records]
                 if self.tokenized_corpus:
                     self.bm25 = BM25Plus(self.tokenized_corpus)
                 logger.info(f"Loaded BM25 index for '{self.collection_name}' with {len(self.doc_records)} documents.")
@@ -61,19 +67,27 @@ class BM25CollectionIndex:
 
     def save(self):
         try:
-            with open(self.index_file, "w", encoding="utf-8") as f:
+            # Atomic write to prevent file corruption during sudden restarts
+            tmp_file = self.index_file.with_suffix(".tmp")
+            with open(tmp_file, "w", encoding="utf-8") as f:
                 json.dump({"records": self.doc_records}, f, ensure_ascii=False)
+            tmp_file.replace(self.index_file)
             logger.info(f"Persisted BM25 index for '{self.collection_name}' to {self.index_file}")
         except Exception as e:
             logger.error(f"Failed to persist BM25 index for '{self.collection_name}': {e}")
 
+    def add_chunks(self, records: List[Dict[str, Any]]):
+        """Alias for add_records for backwards and interface compatibility."""
+        self.add_records(records)
+
     def add_records(self, records: List[Dict[str, Any]]):
         """
-        Adds new chunk records.
+        Adds new chunk records with O(1) lookup.
         Each record should contain: chunk_id, doc_id, chunk_index, raw_text,
         context_summary, contextualized_text, metadata.
         """
-        existing_ids = {r["chunk_id"] for r in self.doc_records}
+        record_map = {r["chunk_id"]: r for r in self.doc_records}
+
         for r in records:
             chunk_id = r["chunk_id"]
             index_text = r.get("contextualized_text") or r.get("raw_text", "")
@@ -87,14 +101,9 @@ class BM25CollectionIndex:
                 "metadata": r.get("metadata", {}),
                 "index_text": index_text
             }
-            if chunk_id in existing_ids:
-                for i, existing in enumerate(self.doc_records):
-                    if existing["chunk_id"] == chunk_id:
-                        self.doc_records[i] = record
-                        break
-            else:
-                self.doc_records.append(record)
-                existing_ids.add(chunk_id)
+            record_map[chunk_id] = record
+
+        self.doc_records = list(record_map.values())
 
         # Rebuild BM25 with BM25Plus
         self.tokenized_corpus = [tokenize_text(r["index_text"]) for r in self.doc_records]
@@ -124,7 +133,9 @@ class BM25CollectionIndex:
         # Pair scores with documents that contain at least one query term
         scored_pairs = []
         for i, score in enumerate(scores):
-            # Ensure document actually contains query terms
+            # Ensure document actually contains query terms and positive score
+            if score <= 0.0:
+                continue
             doc_tokens = set(self.tokenized_corpus[i])
             if not query_token_set.intersection(doc_tokens):
                 continue
@@ -199,7 +210,10 @@ class BM25CollectionIndex:
         self.tokenized_corpus = []
         self.bm25 = None
         if self.index_file.exists():
-            self.index_file.unlink()
+            try:
+                self.index_file.unlink()
+            except Exception:
+                pass
 
 class BM25Service:
     def __init__(self):
@@ -250,4 +264,3 @@ def get_bm25_service() -> BM25Service:
     if _bm25_service_instance is None:
         _bm25_service_instance = BM25Service()
     return _bm25_service_instance
-

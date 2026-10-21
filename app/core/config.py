@@ -60,11 +60,12 @@ class Settings(BaseSettings):
     HF_TOKEN: Optional[str] = None
     OPENAI_API_BASE: Optional[str] = None
     OPENAI_MODEL: str = "gpt-4o-mini"
-    OLLAMA_BASE_URL: str = "http://localhost:11434"
-    OLLAMA_MODEL: str = "llama3.2:latest"
+    OLLAMA_BASE_URL: str = "http://host.docker.internal:11434"
+    OLLAMA_MODEL: str = "gemma3:1b"
     # Local LLM Config (llama.cpp)
-    LOCAL_LLM_REPO: str = "TheBloke/Mistral-7B-Instruct-v0.2-GGUF"
-    LOCAL_LLM_FILE: str = "mistral-7b-instruct-v0.2.Q4_K_M.gguf"
+    LOCAL_LLM_REPO: str = "Qwen/Qwen2.5-1.5B-Instruct-GGUF"
+    LOCAL_LLM_FILE: str = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
+    LOCAL_LLM_CHAT_FORMAT: str = "chatml"
 
 
     # Semantic Chunking Defaults

@@ -44,8 +44,15 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - HF_TOKEN=${HF_TOKEN:-}
       - HF_HOME=/app/data/models
+      - LOCAL_LLM_REPO=Qwen/Qwen2.5-1.5B-Instruct-GGUF
+      - LOCAL_LLM_FILE=qwen2.5-1.5b-instruct-q4_k_m.gguf
+      - LOCAL_LLM_CHAT_FORMAT=chatml
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - OLLAMA_MODEL=gemma3:1b
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
-      - bm25_data:/app/data/bm25_indexes
+      - ./app:/app/app
       - ./data:/app/data
 
   # 1. Vector Database
@@ -113,8 +120,15 @@ services:
       - HF_HOME=/app/data/models
       - HOST=0.0.0.0
       - PORT=8000
+      - LOCAL_LLM_REPO=Qwen/Qwen2.5-1.5B-Instruct-GGUF
+      - LOCAL_LLM_FILE=qwen2.5-1.5b-instruct-q4_k_m.gguf
+      - LOCAL_LLM_CHAT_FORMAT=chatml
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - OLLAMA_MODEL=gemma3:1b
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
-      - bm25_data:/app/data/bm25_indexes
+      - ./app:/app/app
       - ./data:/app/data
 
   # 4. React Frontend Dashboard
@@ -148,8 +162,6 @@ services:
 volumes:
   qdrant_storage:
     name: qdrant_storage
-  bm25_data:
-    name: bm25_data
   redis_data:
     name: redis_data
   pg_data:

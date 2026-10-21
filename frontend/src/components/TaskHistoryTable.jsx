@@ -2,7 +2,7 @@ import React from 'react';
 import { History, RefreshCw, Trash2, CheckCircle2, Clock, AlertTriangle, Loader2, Eye } from 'lucide-react';
 import { deleteTaskApi } from '../api';
 
-export default function TaskHistoryTable({ tasks, onRefresh, onSelectTask, showToast }) {
+export default function TaskHistoryTable({ tasks, onRefresh, onSelectTask, onRetry, showToast }) {
   const handleDelete = async (taskId, e) => {
     e.stopPropagation();
     try {
@@ -110,13 +110,28 @@ export default function TaskHistoryTable({ tasks, onRefresh, onSelectTask, showT
                     {t.duration_ms != null ? `${t.duration_ms} ms` : '—'}
                   </td>
                   <td className="py-2.5 px-3 text-right">
-                    <button
-                      onClick={(e) => handleDelete(t.task_id, e)}
-                      className="p-1 rounded text-slate-500 hover:text-rose-400 hover:bg-rose-950/30 transition"
-                      title="Dismiss task"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    <div className="flex items-center justify-end space-x-1.5">
+                      {t.status === 'failed' && onRetry && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onRetry(t.task_id);
+                          }}
+                          className="p-1 px-2 rounded text-[11px] font-semibold bg-amber-950/80 text-amber-300 border border-amber-800/50 hover:bg-amber-900/60 transition flex items-center space-x-1"
+                          title="Resume task from last checkpoint"
+                        >
+                          <RefreshCw className="w-3 h-3 mr-1" />
+                          <span>Resume</span>
+                        </button>
+                      )}
+                      <button
+                        onClick={(e) => handleDelete(t.task_id, e)}
+                        className="p-1 rounded text-slate-500 hover:text-rose-400 hover:bg-rose-950/30 transition"
+                        title="Dismiss task"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))

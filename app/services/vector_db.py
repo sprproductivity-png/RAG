@@ -38,7 +38,7 @@ class VectorDBService:
                 client = QdrantClient(
                     url=settings.QDRANT_URL,
                     api_key=settings.QDRANT_API_KEY,
-                    timeout=settings.QDRANT_TIMEOUT,
+                    timeout=int(settings.QDRANT_TIMEOUT) if settings.QDRANT_TIMEOUT else None,
                     prefer_grpc=False,
                 )
                 # Test connectivity
@@ -71,6 +71,7 @@ class VectorDBService:
     def ensure_collection(self, collection_name: str, vector_size: int, distance: qmodels.Distance = qmodels.Distance.COSINE) -> bool:
         """
         Ensures a collection exists with the specified vector dimension and distance metric.
+        Also configures payload indices on doc_id for fast filtering and deletion.
         """
         try:
             collections = self.client.get_collections().collections
@@ -84,11 +85,27 @@ class VectorDBService:
                         distance=distance,
                     ),
                 )
+                # Create payload index for doc_id
+                try:
+                    self.client.create_payload_index(
+                        collection_name=collection_name,
+                        field_name="doc_id",
+                        field_schema=qmodels.PayloadSchemaType.KEYWORD,
+                    )
+                except Exception as ex:
+                    logger.debug(f"Payload index creation note: {ex}")
                 logger.info(f"Collection '{collection_name}' created.")
             return True
         except Exception as e:
             logger.error(f"Error ensuring collection '{collection_name}': {e}")
             raise
+
+    def collection_exists(self, collection_name: str) -> bool:
+        try:
+            collections = self.client.get_collections().collections
+            return any(c.name == collection_name for c in collections)
+        except Exception:
+            return False
 
     def upsert_chunks(
         self,
@@ -96,9 +113,11 @@ class VectorDBService:
         ids: List[str],
         vectors: List[List[float]],
         payloads: List[Dict[str, Any]],
+        batch_size: int = 128,
     ) -> bool:
         """
-        Upserts dense vectors and associated chunk payloads into Qdrant.
+        Upserts dense vectors and associated chunk payloads into Qdrant in safe batches
+        to prevent HTTP timeout errors on large documents.
         """
         points = [
             qmodels.PointStruct(
@@ -108,11 +127,13 @@ class VectorDBService:
             )
             for pid, vec, payload in zip(ids, vectors, payloads)
         ]
-        self.client.upsert(
-            collection_name=collection_name,
-            points=points,
-            wait=True,
-        )
+        for i in range(0, len(points), batch_size):
+            batch = points[i : i + batch_size]
+            self.client.upsert(
+                collection_name=collection_name,
+                points=batch,
+                wait=True,
+            )
         return True
 
     def search_dense(
@@ -125,49 +146,106 @@ class VectorDBService:
     ) -> List[Dict[str, Any]]:
         """
         Executes dense vector search on Qdrant and returns scored chunk candidates.
+        Gracefully handles non-existent or empty collections.
         """
-        query_filter = None
-        if filter_metadata:
-            must_conditions = []
-            for key, val in filter_metadata.items():
-                must_conditions.append(
-                    qmodels.FieldCondition(
-                        key=f"metadata.{key}",
-                        match=qmodels.MatchValue(value=val),
+        try:
+            if not self.collection_exists(collection_name):
+                logger.warning(f"Collection '{collection_name}' does not exist in Qdrant. Returning empty dense candidates.")
+                return []
+
+            query_filter = None
+            if filter_metadata:
+                must_conditions = []
+                for key, val in filter_metadata.items():
+                    must_conditions.append(
+                        qmodels.FieldCondition(
+                            key=f"metadata.{key}",
+                            match=qmodels.MatchValue(value=val),
+                        )
                     )
+                query_filter = qmodels.Filter(must=must_conditions)
+
+            results = self.client.query_points(
+                collection_name=collection_name,
+                query=query_vector,
+                limit=limit,
+                score_threshold=score_threshold,
+                query_filter=query_filter,
+                with_payload=True,
+            )
+
+            candidates = []
+            for rank, hit in enumerate(results.points, start=1):
+                payload = hit.payload or {}
+                candidates.append({
+                    "chunk_id": str(hit.id),
+                    "doc_id": payload.get("doc_id", ""),
+                    "chunk_index": payload.get("chunk_index", 0),
+                    "text": payload.get("raw_text", ""),
+                    "context_summary": payload.get("context_summary"),
+                    "contextualized_text": payload.get("contextualized_text"),
+                    "metadata": payload.get("metadata", {}),
+                    "dense_rank": rank,
+                    "dense_score": float(hit.score),
+                })
+            return candidates
+        except UnexpectedResponse as ue:
+            logger.warning(f"Qdrant response error in search_dense for '{collection_name}': {ue}")
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected error in search_dense for '{collection_name}': {e}")
+            return []
+
+    def get_documents(self, collection_name: str) -> List[Dict[str, Any]]:
+        """
+        Scrolls Qdrant vector points to reconstruct distinct document summaries.
+        Provides a fallback if the BM25 index is rebuilding or out of sync.
+        """
+        if not self.collection_exists(collection_name):
+            return []
+
+        try:
+            docs_map: Dict[str, Dict[str, Any]] = {}
+            offset = None
+
+            while True:
+                records, next_offset = self.client.scroll(
+                    collection_name=collection_name,
+                    limit=100,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False,
                 )
-            query_filter = qmodels.Filter(must=must_conditions)
 
-        # In qdrant-client v1.10+, query_points or search is available
-        results = self.client.query_points(
-            collection_name=collection_name,
-            query=query_vector,
-            limit=limit,
-            score_threshold=score_threshold,
-            query_filter=query_filter,
-            with_payload=True,
-        )
+                for r in records:
+                    payload = r.payload or {}
+                    doc_id = payload.get("doc_id", "unknown")
+                    meta = payload.get("metadata", {})
+                    if doc_id not in docs_map:
+                        docs_map[doc_id] = {
+                            "doc_id": doc_id,
+                            "title": meta.get("title") or doc_id,
+                            "filename": meta.get("filename"),
+                            "file_type": meta.get("file_type"),
+                            "ingested_at": meta.get("ingested_at"),
+                            "chunks_count": 0,
+                            "sample_preview": payload.get("raw_text", "")[:200].replace("\n", " ").strip(),
+                            "metadata": meta,
+                        }
+                    docs_map[doc_id]["chunks_count"] += 1
 
-        candidates = []
-        for rank, hit in enumerate(results.points, start=1):
-            payload = hit.payload or {}
-            candidates.append({
-                "chunk_id": str(hit.id),
-                "doc_id": payload.get("doc_id", ""),
-                "chunk_index": payload.get("chunk_index", 0),
-                "text": payload.get("raw_text", ""),
-                "context_summary": payload.get("context_summary"),
-                "contextualized_text": payload.get("contextualized_text"),
-                "metadata": payload.get("metadata", {}),
-                "dense_rank": rank,
-                "dense_score": float(hit.score),
-            })
-        return candidates
+                if next_offset is None:
+                    break
+                offset = next_offset
+
+            return list(docs_map.values())
+        except Exception as e:
+            logger.warning(f"Could not scroll documents from Qdrant for '{collection_name}': {e}")
+            return []
 
     def get_collection_stats(self, collection_name: str) -> Optional[Dict[str, Any]]:
         try:
             info = self.client.get_collection(collection_name=collection_name)
-            # Handle vectors config
             vector_size = 0
             distance_str = "COSINE"
             if hasattr(info.config.params, "vectors"):
@@ -177,7 +255,7 @@ class VectorDBService:
                     distance_str = str(vec_params.distance)
 
             points_count = info.points_count if info.points_count is not None else 0
-            vectors_count = info.vectors_count if hasattr(info, "vectors_count") and info.vectors_count is not None else points_count
+            vectors_count = getattr(info, "vectors_count", None) or points_count
 
             return {
                 "collection_name": collection_name,
@@ -211,6 +289,8 @@ class VectorDBService:
         Deletes all vector points associated with a specific doc_id from Qdrant.
         """
         try:
+            if not self.collection_exists(collection_name):
+                return False
             self.client.delete(
                 collection_name=collection_name,
                 points_selector=qmodels.FilterSelector(
@@ -248,4 +328,3 @@ def get_vector_db_service() -> VectorDBService:
     if _vector_db_instance is None:
         _vector_db_instance = VectorDBService()
     return _vector_db_instance
-

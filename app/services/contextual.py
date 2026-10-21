@@ -96,7 +96,7 @@ class OpenAICompatibleContextualizer(BaseContextualizer):
                 temperature=0.0,
                 messages=[{"role": "user", "content": prompt}]
             )
-            return response.choices[0].message.content.strip()
+            return (response.choices[0].message.content or "").strip()
         except Exception as e:
             logger.error(f"Error calling OpenAI-compatible API for contextual retrieval: {e}")
             return f"Context from document: {document_title or 'Document'}"
@@ -197,11 +197,36 @@ def enrich_chunks_with_context(
         return chunks
 
     contextualizer = get_contextualizer(provider)
+    
+    # Fast path for HeuristicContextualizer: extract document keywords ONCE instead of per-chunk
+    if isinstance(contextualizer, HeuristicContextualizer):
+        if not document_title:
+            first_line = document_text.strip().split("\n")[0]
+            if len(first_line) < 120 and not first_line.endswith("."):
+                document_title = first_line.strip("# ")
+            else:
+                document_title = "Document"
+        key_phrase = _extract_top_keywords(document_text[:50000], top_n=4)
+
+        enriched = []
+        for c in chunks:
+            raw_text = c["raw_text"]
+            summary = (
+                f"[Context: This passage belongs to '{document_title}', "
+                f"which covers {key_phrase}. This section specifically focuses on: "
+                f"{raw_text[:90].replace(chr(10), ' ').strip()}...]"
+            )
+            contextualized = f"{summary}\n\n{raw_text}"
+            item = dict(c)
+            item["context_summary"] = summary
+            item["contextualized_text"] = contextualized
+            enriched.append(item)
+        return enriched
+
     enriched = []
     for c in chunks:
         raw_text = c["raw_text"]
         summary = contextualizer.generate_context(document_text, raw_text, document_title)
-        # Prepend Anthropic Contextual summary
         contextualized = f"{summary}\n\n{raw_text}"
         item = dict(c)
         item["context_summary"] = summary

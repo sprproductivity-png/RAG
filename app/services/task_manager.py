@@ -52,6 +52,7 @@ class IngestionTask:
     chunks_created: Optional[int] = None
     error: Optional[str] = None
     sample_chunks: Optional[List[Dict[str, Any]]] = None
+    retry_count: int = 0
 
     def to_response(self) -> TaskResponse:
         sample_chunk_models = None
@@ -77,6 +78,83 @@ class IngestionTask:
             error=self.error,
             sample_chunks=sample_chunk_models,
         )
+
+def _sync_to_db(task: IngestionTask):
+    """Optional persistence to PostgreSQL DBTask table if available."""
+    try:
+        from app.models.db import SessionLocal, DBTask
+        with SessionLocal() as session:
+            existing = session.query(DBTask).filter_by(task_id=task.task_id).first()
+            if not existing:
+                existing = DBTask(task_id=task.task_id)
+                session.add(existing)
+            existing.status = task.status
+            existing.stage = task.stage
+            existing.progress = task.progress
+            existing.stage_message = task.stage_message
+            existing.filename = task.filename
+            existing.file_size = task.file_size
+            existing.file_type = task.file_type
+            existing.collection_name = task.collection_name
+            existing.title = task.title
+            existing.cache_path = task.cache_path
+            existing.chunking_strategy = task.chunking_strategy
+            existing.use_contextual_retrieval = task.use_contextual_retrieval
+            existing.context_provider = task.context_provider
+            existing.created_at = task.created_at
+            existing.started_at = task.started_at
+            existing.completed_at = task.completed_at
+            existing.duration_ms = task.duration_ms
+            existing.chunks_created = task.chunks_created
+            existing.error = task.error
+            existing.sample_chunks = task.sample_chunks
+            session.commit()
+    except Exception:
+        pass
+
+
+def _delete_from_db(task_id: str):
+    """Deletes task record from PostgreSQL DBTask table."""
+    try:
+        from app.models.db import SessionLocal, DBTask
+        with SessionLocal() as session:
+            existing = session.query(DBTask).filter_by(task_id=task_id).first()
+            if existing:
+                session.delete(existing)
+                session.commit()
+    except Exception as e:
+        logger.warning(f"Failed to delete task {task_id} from DB: {e}")
+
+
+def _get_checkpoint_path(task_id: str) -> Path:
+    cache_dir = settings.get_file_cache_dir()
+    return cache_dir / f"{task_id}_checkpoint.json"
+
+def _load_checkpoint(task_id: str) -> Optional[Dict[str, Any]]:
+    p = _get_checkpoint_path(task_id)
+    if p.exists():
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to read checkpoint for {task_id}: {e}")
+    return None
+
+def _save_checkpoint(task_id: str, data: Dict[str, Any]):
+    p = _get_checkpoint_path(task_id)
+    try:
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception as e:
+        logger.warning(f"Failed to save checkpoint for {task_id}: {e}")
+
+def _delete_checkpoint(task_id: str):
+    p = _get_checkpoint_path(task_id)
+    if p.exists():
+        try:
+            p.unlink()
+        except Exception:
+            pass
 
 class TaskManager:
     def __init__(self):
@@ -155,23 +233,47 @@ class TaskManager:
             return False
 
     async def _init_redis_queue_state(self):
-        """Initializes and ensures queue inspection keys exist in Redis."""
+        """Initializes and ensures queue inspection keys exist in Redis, self-healing orphaned tasks."""
         if not self.redis or not self.redis_available:
             return
         try:
+            processing_ids = list(await self.redis.smembers("rag:queue:processing"))
+            for tid in processing_ids:
+                raw = await self.redis.get(f"rag:task:{tid}")
+                if not raw:
+                    await self.redis.srem("rag:queue:processing", tid)
+                else:
+                    try:
+                        d = json.loads(raw)
+                        if d.get("status") == "processing":
+                            d["status"] = "failed"
+                            d["stage"] = "failed"
+                            d["stage_message"] = "Interrupted by container restart."
+                            d["error"] = "Process terminated before completion."
+                            await self.redis.set(f"rag:task:{tid}", json.dumps(d))
+                            await self.redis.srem("rag:queue:processing", tid)
+                            await self.redis.lpush("rag:queue:failed", tid)
+                            task_obj = IngestionTask(**d)
+                            loop = asyncio.get_running_loop()
+                            await loop.run_in_executor(None, _sync_to_db, task_obj)
+                    except Exception:
+                        await self.redis.srem("rag:queue:processing", tid)
+
             task_ids = await self.redis.zrevrange("rag:tasks:index", 0, 99)
             if task_ids:
-                completed_in_redis = set(await self.redis.lrange("rag:queue:completed", 0, 99))
-                for tid in reversed(task_ids):
-                    if tid not in completed_in_redis:
-                        raw = await self.redis.get(f"rag:task:{tid}")
+                completed_raw = await self.redis.lrange("rag:queue:completed", 0, 99)
+                completed_in_redis = {c.decode("utf-8") if isinstance(c, bytes) else str(c) for c in completed_raw}
+                for tid_item in reversed(task_ids):
+                    tid_str = tid_item.decode("utf-8") if isinstance(tid_item, bytes) else str(tid_item)
+                    if tid_str not in completed_in_redis:
+                        raw = await self.redis.get(f"rag:task:{tid_str}")
                         if raw:
                             try:
                                 d = json.loads(raw)
                                 if d.get("status") == "completed":
-                                    await self.redis.lpush("rag:queue:completed", tid)
+                                    await self.redis.lpush("rag:queue:completed", tid_str)
                                 elif d.get("status") == "failed":
-                                    await self.redis.lpush("rag:queue:failed", tid)
+                                    await self.redis.lpush("rag:queue:failed", tid_str)
                             except Exception:
                                 pass
                 await self.redis.ltrim("rag:queue:completed", 0, 99)
@@ -180,7 +282,7 @@ class TaskManager:
             logger.debug(f"Redis queue state sync: {e}")
 
     async def _sync_task(self, task: IngestionTask):
-        """Synchronizes task state to memory, disk history, and Redis (if connected)."""
+        """Synchronizes task state to memory, disk history, PostgreSQL DB, and Redis."""
         self.tasks[task.task_id] = task
         if self.redis_available and self.redis:
             try:
@@ -190,6 +292,12 @@ class TaskManager:
             except Exception as e:
                 logger.warning(f"Failed to sync task {task.task_id} to Redis: {e}")
         self._save_history()
+        # Non-blocking DB sync
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, _sync_to_db, task)
+        except Exception:
+            pass
 
     def start_worker(self):
         if self.worker_task is None or self.worker_task.done():
@@ -223,10 +331,10 @@ class TaskManager:
                 task_id = None
                 if self.redis_available and self.redis:
                     try:
-                        # BLPOP with a 1 second timeout so worker can check self._is_running
                         pop_res = await self.redis.blpop(["rag:queue:ingestion"], timeout=1)
                         if pop_res:
-                            _, task_id = pop_res
+                            _, tid_raw = pop_res
+                            task_id = tid_raw.decode("utf-8") if isinstance(tid_raw, bytes) else str(tid_raw)
                             await self.redis.sadd("rag:queue:processing", task_id)
                     except Exception as e:
                         logger.warning(f"Redis queue pop error: {e}. Re-verifying Redis connection...")
@@ -256,67 +364,102 @@ class TaskManager:
 
     async def _process_task(self, task: IngestionTask):
         t_start = time.perf_counter()
-        task.started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        task.started_at = task.started_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         task.status = "processing"
 
+        checkpoint = _load_checkpoint(task.task_id) or {}
+
         try:
-            # 1. Parsing Phase
-            task.stage = "parsing"
-            task.progress = 15
-            task.stage_message = f"Reading cached file '{task.filename}' and extracting text..."
-            await self._sync_task(task)
+            # 1. Parsing Phase (Resumable from checkpoint)
+            extracted_text = checkpoint.get("extracted_text")
+            metadata = checkpoint.get("metadata")
+            inferred_title = checkpoint.get("inferred_title")
 
-            cache_path = Path(task.cache_path)
-            if not cache_path.exists():
-                raise FileNotFoundError(f"Cached file '{task.cache_path}' not found on disk.")
+            if not extracted_text:
+                task.stage = "parsing"
+                task.progress = 15
+                task.stage_message = f"Reading cached file '{task.filename}' and extracting text..."
+                await self._sync_task(task)
 
-            file_bytes = cache_path.read_bytes()
-            extracted_text, inferred_title, metadata = parse_uploaded_file(file_bytes, task.filename)
+                cache_path = Path(task.cache_path)
+                if not cache_path.exists():
+                    raise FileNotFoundError(f"Cached file '{task.cache_path}' not found on disk. Please re-upload.")
 
-            final_title = task.title.strip() if task.title and task.title.strip() else inferred_title
-            task.title = final_title
-            metadata["title"] = final_title
-            metadata["task_id"] = task.task_id
+                file_bytes = cache_path.read_bytes()
+                extracted_text, inferred_title, metadata = parse_uploaded_file(file_bytes, task.filename)
 
-            # 2. Chunking Phase
-            task.stage = "chunking"
-            task.progress = 35
-            task.stage_message = f"Executing {task.chunking_strategy} chunking on extracted text ({len(extracted_text):,} chars)..."
-            await self._sync_task(task)
+                final_title = task.title.strip() if task.title and task.title.strip() else inferred_title
+                task.title = final_title
+                metadata["title"] = final_title
+                metadata["task_id"] = task.task_id
 
-            doc_id = f"doc_{uuid.uuid4().hex[:8]}"
-            raw_chunks = chunk_document(
-                text=extracted_text,
-                strategy=task.chunking_strategy  # type: ignore
-            )
+                checkpoint["extracted_text"] = extracted_text
+                checkpoint["inferred_title"] = inferred_title
+                checkpoint["metadata"] = metadata
+                checkpoint["final_title"] = final_title
+                _save_checkpoint(task.task_id, checkpoint)
+            else:
+                final_title = checkpoint.get("final_title", task.title or inferred_title or "Document")
+                metadata = checkpoint.get("metadata") or {}
+                logger.info(f"Task {task.task_id}: Resuming from checkpoint (parsed text: {len(extracted_text):,} chars).")
 
-            if not raw_chunks:
-                raise ValueError("No valid chunks generated from document text.")
+            # 2. Chunking Phase (Resumable from checkpoint)
+            raw_chunks = checkpoint.get("raw_chunks")
+            doc_id = checkpoint.get("doc_id")
 
-            # 3. Contextual Retrieval Phase
-            task.stage = "contextualizing"
-            task.progress = 55
-            provider_label = task.context_provider or settings.CONTEXTUAL_RETRIEVAL_PROVIDER
-            task.stage_message = (
-                f"Enriching {len(raw_chunks)} chunks with Anthropic situational summaries ({provider_label})..."
-                if task.use_contextual_retrieval
-                else f"Skipping contextual retrieval for {len(raw_chunks)} chunks..."
-            )
-            await self._sync_task(task)
+            if not raw_chunks or not doc_id:
+                task.stage = "chunking"
+                task.progress = 35
+                task.stage_message = f"Executing {task.chunking_strategy} chunking on extracted text ({len(extracted_text):,} chars)..."
+                await self._sync_task(task)
 
-            enriched_chunks = enrich_chunks_with_context(
-                document_text=extracted_text,
-                chunks=raw_chunks,
-                document_title=final_title,
-                provider=task.context_provider,  # type: ignore
-                enabled=task.use_contextual_retrieval
-            )
+                doc_id = f"doc_{uuid.uuid4().hex[:8]}"
+                raw_chunks = chunk_document(
+                    text=extracted_text,
+                    strategy=task.chunking_strategy  # type: ignore
+                )
 
-            # 4. Dense Embedding Phase
-            task.stage = "embedding"
-            task.progress = 75
-            task.stage_message = f"Computing dense vector embeddings for {len(enriched_chunks)} chunks with {settings.EMBEDDING_MODEL}..."
-            await self._sync_task(task)
+                if not raw_chunks:
+                    raise ValueError("No valid chunks generated from document text.")
+
+                checkpoint["doc_id"] = doc_id
+                checkpoint["raw_chunks"] = raw_chunks
+                _save_checkpoint(task.task_id, checkpoint)
+            else:
+                logger.info(f"Task {task.task_id}: Resuming from checkpoint ({len(raw_chunks)} raw chunks).")
+
+            # 3. Contextual Retrieval Phase (Resumable from checkpoint)
+            enriched_chunks = checkpoint.get("enriched_chunks")
+
+            if not enriched_chunks:
+                task.stage = "contextualizing"
+                task.progress = 55
+                provider_label = task.context_provider or settings.CONTEXTUAL_RETRIEVAL_PROVIDER
+                task.stage_message = (
+                    f"Enriching {len(raw_chunks)} chunks with Anthropic situational summaries ({provider_label})..."
+                    if task.use_contextual_retrieval
+                    else f"Skipping contextual retrieval for {len(raw_chunks)} chunks..."
+                )
+                await self._sync_task(task)
+
+                enriched_chunks = enrich_chunks_with_context(
+                    document_text=extracted_text,
+                    chunks=raw_chunks,
+                    document_title=final_title,
+                    provider=task.context_provider,  # type: ignore
+                    enabled=task.use_contextual_retrieval
+                )
+
+                checkpoint["enriched_chunks"] = enriched_chunks
+                _save_checkpoint(task.task_id, checkpoint)
+            else:
+                logger.info(f"Task {task.task_id}: Resuming from checkpoint ({len(enriched_chunks)} enriched chunks).")
+
+            # 4. Dense Embedding Phase (Resumable from checkpoint)
+            dense_vectors = checkpoint.get("dense_vectors")
+            all_chunk_ids = checkpoint.get("all_chunk_ids")
+            all_payloads = checkpoint.get("all_payloads")
+            sample_chunks_preview = checkpoint.get("sample_chunks_preview")
 
             embedding_service = get_embedding_service()
             vector_db_service = get_vector_db_service()
@@ -327,55 +470,84 @@ class TaskManager:
                 vector_size=embedding_service.get_dimension()
             )
 
-            all_chunk_ids: List[str] = []
-            all_contextualized_texts: List[str] = []
-            all_payloads: List[Dict[str, Any]] = []
-            sample_chunks_preview: List[Dict[str, Any]] = []
+            if not dense_vectors or not all_chunk_ids or not all_payloads:
+                task.stage = "embedding"
+                task.progress = 75
+                task.stage_message = f"Computing dense vector embeddings for {len(enriched_chunks)} chunks with {settings.EMBEDDING_MODEL}..."
+                await self._sync_task(task)
 
-            for chunk in enriched_chunks:
-                chunk_idx = chunk["chunk_index"]
-                point_id = make_qdrant_uuid(doc_id, chunk_idx)
-                raw_text = chunk["raw_text"]
-                context_summary = chunk.get("context_summary")
-                contextualized_text = chunk.get("contextualized_text", raw_text)
+                all_chunk_ids = []
+                all_contextualized_texts = []
+                all_payloads = []
+                sample_chunks_preview = []
 
-                payload = {
-                    "doc_id": doc_id,
-                    "chunk_id": point_id,
-                    "chunk_index": chunk_idx,
-                    "raw_text": raw_text,
-                    "context_summary": context_summary,
-                    "contextualized_text": contextualized_text,
-                    "metadata": {**metadata, **(chunk.get("metadata") or {})},
-                }
+                for chunk in enriched_chunks:
+                    chunk_idx = chunk["chunk_index"]
+                    point_id = make_qdrant_uuid(doc_id, chunk_idx)
+                    raw_text = chunk["raw_text"]
+                    context_summary = chunk.get("context_summary")
+                    contextualized_text = chunk.get("contextualized_text", raw_text)
 
-                all_chunk_ids.append(point_id)
-                all_contextualized_texts.append(contextualized_text)
-                all_payloads.append(payload)
-
-                if len(sample_chunks_preview) < 3:
-                    sample_chunks_preview.append({
-                        "chunk_id": point_id,
+                    payload = {
                         "doc_id": doc_id,
+                        "chunk_id": point_id,
                         "chunk_index": chunk_idx,
                         "raw_text": raw_text,
                         "context_summary": context_summary,
                         "contextualized_text": contextualized_text,
-                        "metadata": payload["metadata"],
-                    })
+                        "metadata": {**metadata, **(chunk.get("metadata") or {})},
+                    }
 
-            # Dense embeddings run in threadpool
-            loop = asyncio.get_running_loop()
-            dense_embeddings = await loop.run_in_executor(
-                None, embedding_service.embed_texts, all_contextualized_texts
-            )
-            dense_vectors = [v.tolist() for v in dense_embeddings]
+                    all_chunk_ids.append(point_id)
+                    all_contextualized_texts.append(contextualized_text)
+                    all_payloads.append(payload)
 
-            # 5. Dual Indexing Phase (Qdrant + BM25)
+                    if len(sample_chunks_preview) < 3:
+                        sample_chunks_preview.append({
+                            "chunk_id": point_id,
+                            "doc_id": doc_id,
+                            "chunk_index": chunk_idx,
+                            "raw_text": raw_text,
+                            "context_summary": context_summary,
+                            "contextualized_text": contextualized_text,
+                            "metadata": payload["metadata"],
+                        })
+
+                # Compute dense embeddings in batches with live progress updates
+                loop = asyncio.get_running_loop()
+                total_to_embed = len(all_contextualized_texts)
+                batch_size = 64
+                collected_vectors = []
+
+                for b_idx in range(0, total_to_embed, batch_size):
+                    batch_texts = all_contextualized_texts[b_idx : b_idx + batch_size]
+                    b_embeddings = await loop.run_in_executor(
+                        None, embedding_service.embed_texts, batch_texts
+                    )
+                    collected_vectors.extend([v.tolist() for v in b_embeddings])
+
+                    pct = 75 + int((b_idx + len(batch_texts)) / total_to_embed * 14)
+                    task.progress = min(pct, 89)
+                    task.stage_message = f"Embedded {len(collected_vectors)} of {total_to_embed} chunks..."
+                    await self._sync_task(task)
+
+                dense_vectors = collected_vectors
+
+                checkpoint["all_chunk_ids"] = all_chunk_ids
+                checkpoint["all_payloads"] = all_payloads
+                checkpoint["dense_vectors"] = dense_vectors
+                checkpoint["sample_chunks_preview"] = sample_chunks_preview
+                _save_checkpoint(task.task_id, checkpoint)
+            else:
+                logger.info(f"Task {task.task_id}: Resuming from checkpoint ({len(dense_vectors)} vectors).")
+
+            # 5. Dual Indexing Phase (Qdrant + BM25) with safe batching
             task.stage = "indexing"
             task.progress = 90
             task.stage_message = f"Storing {len(all_chunk_ids)} vectors in Qdrant and updating BM25 index..."
             await self._sync_task(task)
+
+            loop = asyncio.get_running_loop()
 
             await loop.run_in_executor(
                 None,
@@ -383,7 +555,8 @@ class TaskManager:
                 task.collection_name,
                 all_chunk_ids,
                 dense_vectors,
-                all_payloads
+                all_payloads,
+                128  # Batch size of 128 points
             )
 
             await loop.run_in_executor(
@@ -414,6 +587,16 @@ class TaskManager:
                 except Exception as ex:
                     logger.warning(f"Failed to record completed task in Redis: {ex}")
 
+            # CLEANUP: Only on success, remove cached file and checkpoint
+            try:
+                p = Path(task.cache_path)
+                if p.exists():
+                    p.unlink()
+                _delete_checkpoint(task.task_id)
+                logger.info(f"Cleaned up cache and checkpoint for task {task.task_id}")
+            except Exception as ex:
+                logger.warning(f"Cleanup note: {ex}")
+
         except Exception as e:
             logger.error(f"Task {task.task_id} failed: {e}", exc_info=True)
             duration_ms = (time.perf_counter() - t_start) * 1000.0
@@ -426,13 +609,6 @@ class TaskManager:
             task.stage_message = f"Failed during stage '{task.stage}': {str(e)}"
             await self._sync_task(task)
 
-            try:
-                p = Path(task.cache_path)
-                if p.exists():
-                    p.unlink()
-            except Exception:
-                pass
-
             if self.redis_available and self.redis:
                 try:
                     await self.redis.srem("rag:queue:processing", task.task_id)
@@ -440,6 +616,8 @@ class TaskManager:
                     await self.redis.ltrim("rag:queue:failed", 0, 99)
                 except Exception as ex:
                     logger.warning(f"Failed to record failed task in Redis: {ex}")
+
+            # Preserve cache and checkpoint files so task can resume from this exact point!
 
     async def submit_file_task(
         self,
@@ -557,6 +735,35 @@ class TaskManager:
         )[:limit]
         return [t.to_response() for t in sorted_tasks]
 
+    async def retry_task(self, task_id: str) -> Optional[IngestionTask]:
+        """Resets a failed task to queued state, preserving checkpoints to resume from the last successful stage."""
+        task = await self.get_task_obj(task_id)
+        if not task:
+            return None
+
+        task.status = "queued"
+        task.stage = "queued"
+        task.progress = 5
+        task.error = None
+        task.stage_message = "Re-queued for ingestion. Resuming from last saved checkpoint..."
+        task.started_at = None
+        task.completed_at = None
+        task.duration_ms = None
+
+        await self._sync_task(task)
+
+        if self.redis_available and self.redis:
+            try:
+                await self.redis.lrem("rag:queue:failed", 0, task_id)
+                await self.redis.rpush("rag:queue:ingestion", task_id)
+            except Exception as e:
+                logger.warning(f"Failed to re-queue task in Redis: {e}")
+        else:
+            await self.queue.put(task_id)
+
+        logger.info(f"Task {task_id} re-queued for resumable execution.")
+        return task
+
     async def delete_task(self, task_id: str) -> bool:
         deleted = False
         if task_id in self.tasks:
@@ -581,6 +788,14 @@ class TaskManager:
             except Exception:
                 pass
 
+        try:
+            _delete_checkpoint(task_id)
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, _delete_from_db, task_id)
+            deleted = True
+        except Exception:
+            pass
+
         self._save_history()
         return deleted
 
@@ -591,6 +806,13 @@ class TaskManager:
             try:
                 pending_count = await self.redis.llen("rag:queue:ingestion")
                 processing_ids = list(await self.redis.smembers("rag:queue:processing"))
+                active_processing = []
+                for pid in processing_ids:
+                    task_raw = await self.redis.get(f"rag:task:{pid}")
+                    if task_raw:
+                        active_processing.append(pid)
+                    else:
+                        await self.redis.srem("rag:queue:processing", pid)
                 completed_count = await self.redis.llen("rag:queue:completed")
                 completed_ids = await self.redis.lrange("rag:queue:completed", 0, 9)
                 failed_count = await self.redis.llen("rag:queue:failed")
@@ -600,10 +822,10 @@ class TaskManager:
                     "queue_backend": "redis",
                     "redis_connected": True,
                     "pending_count": pending_count,
-                    "processing_count": len(processing_ids),
+                    "processing_count": len(active_processing),
                     "completed_count": completed_count,
                     "failed_count": failed_count,
-                    "active_processing_task_ids": processing_ids,
+                    "active_processing_task_ids": active_processing,
                     "recent_completed_task_ids": completed_ids,
                     "recent_failed_task_ids": failed_ids,
                 }
@@ -634,4 +856,3 @@ def get_task_manager() -> TaskManager:
     if _task_manager_instance is None:
         _task_manager_instance = TaskManager()
     return _task_manager_instance
-

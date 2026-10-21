@@ -114,6 +114,18 @@ export async function fetchTasks(limit = 50) {
   return res.json();
 }
 
+
+export async function retryTaskApi(taskId) {
+  const res = await fetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}/retry`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || 'Failed to retry task');
+  }
+  return res.json();
+}
+
 export async function deleteTaskApi(taskId) {
   const res = await fetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}`, {
     method: 'DELETE',
@@ -146,6 +158,26 @@ export async function executeAskApi(payload) {
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.detail || 'Ask request failed');
+  }
+  return res.json();
+}
+
+export async function triggerHousekeepApi() {
+  const res = await fetch(`${API_BASE}/system/housekeep`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || 'Housekeeping job failed');
+  }
+  return res.json();
+}
+
+export async function fetchHousekeepStatusApi() {
+  const res = await fetch(`${API_BASE}/system/housekeep/status`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || 'Failed to fetch housekeeping status');
   }
   return res.json();
 }

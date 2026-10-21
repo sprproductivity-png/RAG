@@ -26,6 +26,9 @@ class HybridSearchEngine:
         Combines ranked lists using Reciprocal Rank Fusion:
         RRF_Score(d) = (w_dense / (k + rank_dense)) + (w_sparse / (k + rank_sparse))
         """
+        if not dense_results and not sparse_results:
+            return []
+
         fused_map: Dict[str, Dict[str, Any]] = {}
 
         # 1. Process dense rankings
@@ -76,6 +79,9 @@ class HybridSearchEngine:
         Combines scores using min-max normalization:
         Norm_Score(d) = w_dense * norm(dense_score) + w_sparse * norm(bm25_score)
         """
+        if not dense_results and not sparse_results:
+            return []
+
         fused_map: Dict[str, Dict[str, Any]] = {}
 
         # Normalize dense
@@ -139,9 +145,21 @@ class HybridSearchEngine:
         coll = collection_name or settings.DEFAULT_COLLECTION
         timings: Dict[str, float] = {}
 
+        q_clean = (query or "").strip()
+        if not q_clean:
+            return {
+                "query": query,
+                "collection_name": coll,
+                "total_dense_candidates": 0,
+                "total_sparse_candidates": 0,
+                "total_fused_candidates": 0,
+                "results": [],
+                "timing_ms": {"total_ms": 0.0},
+            }
+
         # 1. Dense retrieval
         t0 = time.perf_counter()
-        query_vector = self.embedding_service.embed_query(query)
+        query_vector = self.embedding_service.embed_query(q_clean)
         dense_candidates = self.vector_db_service.search_dense(
             collection_name=coll,
             query_vector=query_vector,
@@ -154,7 +172,7 @@ class HybridSearchEngine:
         t0 = time.perf_counter()
         sparse_candidates = self.bm25_service.search_sparse(
             collection_name=coll,
-            query=query,
+            query=q_clean,
             limit=sparse_top_k,
             filter_metadata=filter_metadata,
         )
@@ -182,15 +200,12 @@ class HybridSearchEngine:
         # 4. Cross-Encoder Re-ranking
         t0 = time.perf_counter()
         if apply_reranking and fused_candidates:
-            # For re-ranking, we use contextualized_text if available, or raw text
             rerank_pool = fused_candidates[:max(dense_top_k, sparse_top_k)]
-            # We can use text_key="contextualized_text" or "text"
-            # Contextualized text allows the cross-encoder to leverage Anthropic contextual summaries!
             texts_to_score = [
                 c.get("contextualized_text") or c.get("text", "")
                 for c in rerank_pool
             ]
-            ce_scores = self.reranker_service.compute_scores(query, texts_to_score)
+            ce_scores = self.reranker_service.compute_scores(q_clean, texts_to_score)
             for c, s in zip(rerank_pool, ce_scores):
                 c["cross_encoder_score"] = s
                 c["final_score"] = s
@@ -222,4 +237,3 @@ def get_hybrid_engine() -> HybridSearchEngine:
     if _hybrid_engine_instance is None:
         _hybrid_engine_instance = HybridSearchEngine()
     return _hybrid_engine_instance
-

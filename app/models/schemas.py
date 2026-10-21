@@ -233,3 +233,14 @@ class AskResponse(BaseModel):
     answer: str
     sources: List[ScoredChunk]
     duration_ms: float
+
+# -------------------------------------------------------------
+# System & Housekeeping Schemas
+# -------------------------------------------------------------
+class HousekeepingResponse(BaseModel):
+    timestamp: str
+    duration_ms: float
+    retried_tasks: List[Dict[str, Any]] = Field(default_factory=list)
+    cache_cleanup: Dict[str, Any] = Field(default_factory=dict)
+    reconciliation: Dict[str, Any] = Field(default_factory=dict)
+    status: str = "healthy"

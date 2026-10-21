@@ -3,11 +3,19 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg2://postgres:postgres@db:5432/rag")
 
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+try:
+    engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+except Exception as e:
+    logger.warning(f"Could not initialize PostgreSQL engine: {e}")
+    engine = None
+    SessionLocal = None
 
 Base = declarative_base()
 
@@ -37,4 +45,9 @@ class DBTask(Base):
     sample_chunks = Column(JSON, nullable=True)
 
 def init_db():
-    Base.metadata.create_all(bind=engine)
+    if engine is not None:
+        try:
+            Base.metadata.create_all(bind=engine)
+            logger.info("PostgreSQL database tables initialized.")
+        except Exception as e:
+            logger.warning(f"PostgreSQL init_db skipped/failed: {e}")

@@ -25,6 +25,7 @@ from app.models.schemas import (
     TaskResponse,
     TaskListResponse,
     QueueStatusResponse,
+    HousekeepingResponse,
 )
 from app.services.file_parser import parse_uploaded_file
 from app.services.embeddings import get_embedding_service
@@ -290,6 +291,22 @@ async def delete_task(task_id: str):
         )
     return {"message": f"Task '{task_id}' removed."}
 
+@router.post(
+    "/tasks/{task_id}/retry",
+    response_model=TaskResponse,
+    summary="Retry a failed task, resuming automatically from the last checkpointed stage"
+)
+async def retry_task(task_id: str):
+    task_manager = get_task_manager()
+    task = await task_manager.retry_task(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Task '{task_id}' not found."
+        )
+    return task.to_response()
+
+
 
 # -------------------------------------------------------------
 # Search & Retrieval Endpoints
@@ -440,6 +457,9 @@ async def delete_collection(collection_name: str):
 async def list_documents(collection_name: str):
     bm25 = get_bm25_service()
     docs = bm25.get_documents(collection_name)
+    if not docs:
+        vector_db = get_vector_db_service()
+        docs = vector_db.get_documents(collection_name)
     return DocumentListResponse(
         collection_name=collection_name,
         total_documents=len(docs),
@@ -590,3 +610,31 @@ async def ask_question(request: AskRequest):
         sources=scored_chunks,
         duration_ms=round(duration_ms, 2)
     )
+
+
+# -------------------------------------------------------------
+# System Maintenance & Housekeeping Endpoints
+# -------------------------------------------------------------
+@router.post(
+    "/system/housekeep",
+    response_model=HousekeepingResponse,
+    summary="Trigger system maintenance: auto-retries failed tasks, purges stale cache, and reconciles data integrity"
+)
+async def run_housekeeping():
+    from app.services.housekeeper import get_housekeeper_service
+    housekeeper = get_housekeeper_service()
+    report = await housekeeper.run_housekeeping_cycle()
+    return report
+
+@router.get(
+    "/system/housekeep/status",
+    response_model=HousekeepingResponse,
+    summary="Get status and report of the latest housekeeping maintenance cycle"
+)
+async def get_housekeeping_status():
+    from app.services.housekeeper import get_housekeeper_service
+    housekeeper = get_housekeeper_service()
+    if housekeeper.last_report is None:
+        report = await housekeeper.run_housekeeping_cycle()
+        return report
+    return housekeeper.last_report
